@@ -2,7 +2,7 @@
 server_host: "127.0.0.1"   # 1단계: localhost. 4단계에서 작업대 공인 IP 로.
 control_port: 5555
 video_port: 5556
-use_mock: true             # 1단계: mock 리더 암 사용
+use_mock: false            # 2단계-A: 실물 리더 암 2대. mock 으로 되돌리려면 true.
 client_watchdog_ms: 300    # 텔레메트리 무수신 시 화면 경고까지의 시간
 
 # 리더 암 2대. 2026-07-31 실측.

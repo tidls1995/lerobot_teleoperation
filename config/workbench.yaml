@@ -1,5 +1,5 @@
 # 작업대(서버) 설정
-use_mock: true          # 1단계: mock 장치 사용. 2단계에서 false 로.
+use_mock: false         # 2단계-A: 실물 팔로워 암 2대. mock 으로 되돌리려면 true.
 control_port: 5555      # UDP - 제어 + 텔레메트리
 video_port: 5556        # TCP - 영상 3채널 다중화
 
