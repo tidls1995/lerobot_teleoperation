@@ -13,7 +13,24 @@
 
 **범위:** 스펙 §11의 **2단계만**. 개발 PC 한 대에 팔 4대와 카메라 3대를 모두 연결하고 localhost로 실행한다. 2대의 PC로 나누는 것(3단계)과 인터넷(4단계)은 다음 계획에서 다룬다.
 
-**전제:** 리더 2대 + 팔로워 2대 + USB 카메라 3대가 물리적으로 준비되어 있다.
+**전제:** 리더 2대 + 팔로워 2대가 물리적으로 준비되어 있다.
+
+## 실행 순서: 2단계-A(카메라 없음) → 2단계-B(카메라)
+
+팔 4대가 USB 포트 4개를 다 쓰므로 카메라를 동시에 꽂을 수 없다. 그래서 **카메라 없이 팔만 먼저** 검증한다.
+
+이 순서가 오히려 낫다. 첫 실물 조종에서는 팔이 조종자 눈앞에 있으므로 **화면이 아니라 직접 눈으로 보고, 이상하면 손으로 잡을 수 있다.** 카메라를 끼고 시작하면 "화면으로 보이는 것"과 "실제로 일어나는 것"이 어긋났을 때 알아채기 어렵다.
+
+| | 2단계-A (이번) | 2단계-B (다음) |
+|---|---|---|
+| 장비 | 팔 4대, 카메라 0대 | 카메라 3대 추가 |
+| 설정 | `cameras: []` | 카메라 3대 |
+| 조종자의 눈 | **실제 팔을 직접 봄** | 화면 |
+| 검증 대상 | 캘리브레이션, 좌우, 추종, 안전장치 4개 | 영상 지연, 깊이 감, 손목캠 유용성 |
+
+USB 포트 부족은 2단계 한정 문제다. 실제 구성에서는 카메라가 **작업대 PC** 에 붙고 집 PC 에는 리더 2대만 붙으므로, 3단계에서 PC 를 나누면 해소된다.
+
+이 계획의 Task 1~7은 두 경우에 공통이고, Task 6 Step 6(카메라 인덱스 찾기)과 Task 9의 영상 관련 확인만 2단계-B 로 미룬다.
 
 ---
 
@@ -693,6 +710,25 @@ def test_shipped_config_files_still_load_after_stage2():
     assert set(w.arms) == {"left", "right"}
     assert set(h.arms) == {"left", "right"}
     assert w.safety.gripper_max_step > 0
+
+
+def test_camera_list_may_be_empty(tmp_path):
+    """2단계-A: USB 포트가 부족해 카메라 없이 팔만 돌린다."""
+    text = workbench_with_arms()
+    start = text.index("cameras:")
+    end = text.index("safety:")
+    text = text[:start] + "cameras: []\n" + text[end:]
+    cfg = load_workbench_config(_write(tmp_path, "w.yaml", text))
+    assert cfg.cameras == []
+
+
+def test_camera_list_must_still_be_a_list(tmp_path):
+    text = workbench_with_arms()
+    start = text.index("cameras:")
+    end = text.index("safety:")
+    text = text[:start] + "cameras: 3\n" + text[end:]
+    with pytest.raises(ConfigError, match="list"):
+        load_workbench_config(_write(tmp_path, "w.yaml", text))
 ```
 
 - [ ] **Step 2: 테스트가 실패하는지 확인한다**
@@ -781,6 +817,16 @@ def _parse_arms(raw: Any) -> dict[str, ArmConfig]:
             calibration_id=str(_require(entry, "calibration_id", f"arms.{side}")),
         )
     return arms
+```
+
+`_parse_cameras` 가 빈 목록을 허용하도록 첫 줄을 바꾼다. 2단계-A 는 카메라 없이 돌리기 때문이다:
+
+```python
+def _parse_cameras(raw: Any) -> list[CameraConfig]:
+    # 빈 목록을 허용한다. USB 포트가 부족해 카메라 없이 팔만 검증하는 구성이
+    # 있고(2단계-A), 카메라 0대는 오류가 아니라 선택이다.
+    if not isinstance(raw, list):
+        raise ConfigError(f"cameras must be a list, got {type(raw).__name__}")
 ```
 
 `_parse_joint_limits` 의 마지막 검증에 그리퍼 범위 확인을 추가한다. 기존 루프 안의 `limits[name] = (lo, hi)` 바로 앞에 넣는다:
@@ -1604,7 +1650,9 @@ cd "C:/Users/flash/Desktop/lerobot/remote teleoperation" && "C:/Users/flash/mini
 
 기대: 167개 전부 PASS (`test_usb_camera.py` 6개 + `test_camera_pub.py` 에 추가한 카메라 실패 2개).
 
-- [ ] **Step 6: 실제 카메라 인덱스를 찾는다**
+- [ ] **Step 6: 실제 카메라 인덱스를 찾는다 (2단계-B, 지금은 건너뛴다)**
+
+> **2단계-A 에서는 이 단계를 건너뛴다.** USB 포트가 팔 4대로 다 차서 카메라를 꽂을 수 없다. `usb_camera.py` 코드와 그 테스트는 지금 만들어 두고(카메라 없이도 실패 경로와 Protocol 만족은 검증된다), 실제 장치 확인만 미룬다.
 
 ```bash
 cd "C:/Users/flash/Desktop/lerobot/remote teleoperation" && "C:/Users/flash/miniconda3/envs/lerobot/python.exe" -m tools.probe_hardware --cameras
@@ -1944,6 +1992,65 @@ def build_leader(cfg: HomeConfig):
                 log.info("mock leader motion: %s", leader.motion_enabled)
 ```
 
+**카메라 수를 인자로 받게 한다.** 2단계-A 는 카메라가 0대인데, `cam_ids` 가 `[0, 1, 2]` 로 박혀 있으면 화면에 "no signal" 칸 3개가 뜬다. 첫 실물 조종에서 조종자가 "뭐가 고장났나?" 하고 헷갈릴 이유를 만들지 않는다.
+
+`main()` 의 `argparse` 에 추가한다:
+
+```python
+    parser.add_argument(
+        "--cameras",
+        type=int,
+        default=3,
+        help="how many camera panes to show (0 for the no-camera bring-up)",
+    )
+```
+
+그리고 `cam_ids` 를 그 값으로 만든다:
+
+```python
+    cam_ids = list(range(args.cameras))
+    hud = Hud(
+        cam_ids=cam_ids,
+        cam_names={0: "front", 1: "wrist_left", 2: "wrist_right"},
+    )
+```
+
+`Hud._draw_videos` 는 `cam_ids` 를 순회하므로 빈 목록이면 아무것도 그리지 않는다. `home/hud.py` 는 수정하지 않는다.
+
+`tests/test_build.py` 에 인자 파싱 테스트를 추가한다:
+
+```python
+
+
+def test_client_accepts_zero_cameras():
+    """2단계-A: 카메라 없이 팔만 돌릴 때 화면에 빈 칸이 뜨지 않아야 한다."""
+    from home.hud import Hud
+
+    hud = Hud(cam_ids=[], cam_names={})
+    try:
+        hud.draw(
+            frames={},
+            telemetry=None,
+            leader_joints=None,
+            stats=__import__("home.hud", fromlist=["HudStats"]).HudStats(
+                rtt_ms=None, lost_packets=0, video_connected=False, telemetry_age_ms=None
+            ),
+            align_threshold_deg=3.0,
+            now=0.0,
+        )
+    finally:
+        hud.close()
+```
+
+이 테스트는 pygame 창을 띄우므로 `SDL_VIDEODRIVER=dummy` 환경변수와 함께 돌린다. `tests/conftest.py` 를 만들어 자동으로 걸어둔다:
+
+```python
+import os
+
+# pygame 을 쓰는 테스트가 실제 창을 띄우지 않게 한다.
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+```
+
 - [ ] **Step 5: 테스트가 통과하는지 확인한다**
 
 ```bash
@@ -2142,9 +2249,21 @@ cd "C:/Users/flash/Desktop/lerobot/remote teleoperation" && git add -A && git co
 3. **전원 스위치나 USB 를 뽑을 수 있는 위치에 손을 둔다**
 4. 리더 2대는 팔로워와 **비슷한 자세**로 미리 놓는다 (정렬을 쉽게 하기 위해)
 
-- [ ] **Step 1: `use_mock` 을 끈다**
+- [ ] **Step 1: `use_mock` 을 끄고 카메라를 비운다**
 
 `config/workbench.yaml` 과 `config/home.yaml` 의 `use_mock` 을 `false` 로 바꾼다.
+
+2단계-A 이므로 `config/workbench.yaml` 의 `cameras:` 를 빈 목록으로 바꾼다. 원래 3줄은 지우지 말고 주석으로 남겨 2단계-B 에서 되살린다:
+
+```yaml
+cameras: []   # 2단계-A: USB 포트가 팔 4대로 차서 카메라 없음
+# cameras:
+#   - { id: 0, name: front,       index: 0, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
+#   - { id: 1, name: wrist_left,  index: 1, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
+#   - { id: 2, name: wrist_right, index: 2, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
+```
+
+클라이언트는 Step 3에서 `--cameras 0` 으로 띄운다.
 
 - [ ] **Step 2: 서버를 띄운다**
 
@@ -2165,8 +2284,10 @@ INFO control server listening on UDP 5555
 - [ ] **Step 3: 클라이언트를 띄운다**
 
 ```bash
-cd "C:/Users/flash/Desktop/lerobot/remote teleoperation" && "C:/Users/flash/miniconda3/envs/lerobot/python.exe" -m home.client --config config/home.yaml
+cd "C:/Users/flash/Desktop/lerobot/remote teleoperation" && "C:/Users/flash/miniconda3/envs/lerobot/python.exe" -m home.client --config config/home.yaml --cameras 0
 ```
+
+**창을 팔이 보이는 위치로 옮겨 둔다.** 2단계-A 에서는 영상이 없으므로 조종자의 눈이 유일한 시각 피드백이다. 화면에서는 관절 막대와 상태만 본다.
 
 이 순간 팔로워에 **토크가 들어온다** (ALIGNING). 팔이 현재 자세를 붙들며 살짝 굳는 느낌이 난다. 크게 움직이면 뭔가 잘못된 것이니 즉시 전원을 끊는다.
 
@@ -2212,17 +2333,18 @@ ENGAGED 상태로 30초쯤 조종하면서 HUD 의 `send` 값을 본다.
 - **60Hz 근처** → 그대로 간다
 - **크게 낮음** → Task 8 Step 4/5에서 적어둔 읽기 레이트가 원인이다. `LeaderSender(rate_hz=...)` 를 실측값의 80% 정도로 낮추고, 워치독 200ms 가 그 레이트에서 몇 패킷에 해당하는지 다시 계산한다 (60Hz 에서 12패킷이었다)
 
-- [ ] **Step 8: 실제 작업 1건을 해본다**
+- [ ] **Step 8: 실제 작업 1건을 해본다 (눈으로 보면서)**
 
-깨지지 않는 물건(빈 플라스틱 통 등)을 작업대에 놓고 **집어서 옮긴다.**
+깨지지 않는 물건(빈 플라스틱 통 등)을 작업대에 놓고 **집어서 옮긴다.** 2단계-A 이므로 화면이 아니라 팔을 직접 보면서 한다.
 
 여기서 판단할 것:
-- 카메라 3대로 깊이 감이 잡히는가
-- 그리퍼 개폐 속도(`gripper_max_step`)가 적절한가
+- 그리퍼 개폐 속도(`gripper_max_step` 기본 4.0 = 초당 240%)가 적절한가. 너무 빠르면 물건을 튕겨내고, 너무 느리면 답답하다
 - 90도/초가 너무 느리거나 빠르지 않은가
-- 손목캠이 실제로 도움이 되는가
+- 양팔을 동시에 조종하는 것이 실제로 가능한가
 
 값을 조정하면 그 이유를 `docs/hardware-setup.md` 에 적는다.
+
+**깊이 감과 손목캠 유용성 판단은 2단계-B 로 미룬다** — 지금은 두 눈으로 보고 있으므로 카메라만 있을 때의 어려움을 알 수 없다.
 
 - [ ] **Step 9: 2단계 통과 판정 (스펙 §11)**
 
@@ -2243,6 +2365,18 @@ cd "C:/Users/flash/Desktop/lerobot/remote teleoperation" && git add -A && git co
 ```
 
 ---
+
+## 2단계-B 로 넘길 항목 (카메라)
+
+팔 검증이 끝난 뒤, USB 포트를 확보하고 나서 한다. 3단계에서 PC 를 나누면 카메라는 작업대 PC 로 가므로 포트 문제가 자연히 풀린다. 그때 함께 해도 된다.
+
+- Task 6 Step 6: `python -m tools.probe_hardware --cameras` 로 인덱스와 실제 해상도·fps 확인
+- `config/workbench.yaml` 의 `cameras:` 되살리고 실측 인덱스 반영
+- 카메라 1대를 뽑은 채로 띄워 **그 칸만 "no signal" 이고 조종은 계속되는지** 확인 (스펙 §9)
+- 실제 영상 지연 측정 (USB 캡처가 지배적 요소, 30~50ms 예상)
+- 실제 센서 영상의 JPEG 크기 확인 — 합성 영상보다 압축이 덜 되므로 4.3 Mbps 추정치를 재검증
+- **카메라만 보고 조종해보고** 깊이 감이 잡히는지, 손목캠이 실제로 도움이 되는지 판단
+- 필요하면 정면 카메라 위치·각도 조정
 
 ## 3단계로 넘길 항목
 
