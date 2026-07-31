@@ -124,8 +124,20 @@ class VideoServer:
 
     def start(self) -> None:
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind(("0.0.0.0", self._requested_port))
+        # SO_REUSEADDR 을 걸지 않는다. Windows 에서는 다른 프로세스가 같은 포트를
+        # 가로챌 수 있고, 죽지 않은 옛 서버가 영상을 대신 내보내면 조종자는
+        # '움직이는 옛 화면'을 보게 되어 알아채기가 더 어렵다.
+        try:
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            listener.bind(("0.0.0.0", self._requested_port))
+        except OSError as exc:
+            listener.close()
+            raise OSError(
+                f"cannot bind video port TCP {self._requested_port}: {exc}. "
+                "Another teleoperation server is probably still running - "
+                "stop it before starting a new one."
+            ) from exc
         listener.listen(1)
         listener.settimeout(0.5)
         self._listener = listener

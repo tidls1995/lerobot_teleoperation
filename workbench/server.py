@@ -70,10 +70,7 @@ class TeleopServer:
         return self._video.port if self._video is not None else None
 
     def start(self) -> None:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("0.0.0.0", self._cfg.control_port))
-        sock.settimeout(_RECV_TIMEOUT)
+        sock = self._bind_control_socket()
         self._sock = sock
         self.control_port = sock.getsockname()[1]
 
@@ -165,6 +162,34 @@ class TeleopServer:
                     self._sock.sendto(telemetry.pack(), client_addr)
                 except OSError:
                     log.debug("telemetry send failed")
+
+    def _bind_control_socket(self) -> socket.socket:
+        """제어 소켓을 **배타적으로** 연다.
+
+        SO_REUSEADDR 을 걸지 않는다. Windows 에서 이 옵션은 '이미 쓰는 UDP 포트에
+        함께 바인드해도 된다'는 뜻이고, 그러면 도착한 데이터그램이 어느 소켓으로
+        갈지 정해지지 않는다. 실제로 이 때문에 죽지 않은 옛 서버가 제어 패킷을
+        가로채고, 그 서버의 last_seq 가 높아 전부 '낡은 패킷'으로 폐기해서
+        조종자 화면이 DISCONNECTED 로 남거나 워치독이 간헐적으로 터졌다.
+
+        두 번째 기동은 조용히 성공하는 대신 **큰 소리로 실패해야 한다.**
+        조종자가 모르는 서버가 로봇 명령을 받아가는 상황을 만들지 않기 위함이다.
+        """
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # Windows 전용. 다른 프로세스가 SO_REUSEADDR 로 이 포트를 가로채는 것도 막는다.
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            sock.bind(("0.0.0.0", self._cfg.control_port))
+        except OSError as exc:
+            sock.close()
+            raise OSError(
+                f"cannot bind control port UDP {self._cfg.control_port}: {exc}. "
+                "Another teleoperation server is probably still running - "
+                "stop it before starting a new one."
+            ) from exc
+        sock.settimeout(_RECV_TIMEOUT)
+        return sock
 
     def _read_actual(self) -> tuple[list[float], bool]:
         """팔로워의 실제각을 읽는다.

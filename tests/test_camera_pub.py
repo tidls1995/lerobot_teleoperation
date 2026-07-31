@@ -134,3 +134,18 @@ def test_capture_thread_runs_at_roughly_the_requested_fps():
         assert 5 <= seq <= 40
     finally:
         pub.stop()
+
+
+def test_second_video_server_cannot_steal_the_port():
+    """좀비 영상 서버가 같은 포트에 붙으면 '움직이는 옛 화면'이 와서 알아채기 어렵다.
+
+    제어 포트와 같은 이유로 두 번째 기동은 실패해야 한다.
+    """
+    first = VideoServer(port=0, publishers=[make_publisher()])
+    first.start()
+    try:
+        second = VideoServer(port=first.port, publishers=[make_publisher(cam_id=1)])
+        with pytest.raises(OSError, match="still running"):
+            second.start()
+    finally:
+        first.stop()

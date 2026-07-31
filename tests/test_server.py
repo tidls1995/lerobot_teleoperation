@@ -222,3 +222,33 @@ def test_motor_failure_holds_after_three_retries():
     finally:
         client.close()
         server.stop()
+
+
+def test_second_server_cannot_steal_the_control_port():
+    """같은 포트에 두 번째 서버가 붙으면 조용히 성공해서는 안 된다.
+
+    Windows 의 SO_REUSEADDR 은 이미 쓰는 UDP 포트에 다른 프로세스가 함께
+    바인드하도록 허용하고, 도착한 데이터그램이 어느 소켓으로 갈지는 정해지지
+    않는다. 그러면 조종자가 모르는 서버가 제어 명령을 받아가고, 진짜 서버는
+    패킷이 비어 보여 워치독이 터진다. 두 번째 기동은 반드시 실패해야 한다.
+    """
+    from common.config import WorkbenchConfig
+
+    cfg_a = WorkbenchConfig(
+        use_mock=True, control_port=0, video_port=0, cameras=[], safety=make_config()
+    )
+    first = TeleopServer(cfg=cfg_a, follower=FakeFollowerArms(), video=None)
+    first.start()
+    try:
+        cfg_b = WorkbenchConfig(
+            use_mock=True,
+            control_port=first.control_port,
+            video_port=0,
+            cameras=[],
+            safety=make_config(),
+        )
+        second = TeleopServer(cfg=cfg_b, follower=FakeFollowerArms(), video=None)
+        with pytest.raises(OSError):
+            second.start()
+    finally:
+        first.stop()
