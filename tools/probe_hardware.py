@@ -79,6 +79,58 @@ def probe_arms(config_path: str, kind: str) -> int:
     return 0
 
 
+def scan_motors() -> int:
+    """모든 팔의 모터 1~6이 응답하는지 개별로 확인한다.
+
+    "There is no status packet!" 로 연결이 실패했을 때, 모터가 진짜 죽은 것인지
+    그냥 패킷이 유실된 것인지 가른다. 여기서 전부 O 로 나오면 배선과 전원은
+    정상이고 간헐적 유실이므로, 어댑터의 연결 재시도가 처리해준다.
+    """
+    from lerobot.motors import Motor, MotorNormMode
+    from lerobot.motors.feetech import FeetechMotorsBus
+
+    from common.joints import MOTOR_NAMES
+    from common.serial_ports import list_serial_ports
+
+    ports = list_serial_ports()
+    if not ports:
+        print("no serial ports found - are the arms plugged in?")
+        return 1
+
+    ok_everywhere = True
+    for p in ports:
+        motors = {n: Motor(i + 1, "sts3215", MotorNormMode.DEGREES) for i, n in enumerate(MOTOR_NAMES)}
+        bus = FeetechMotorsBus(port=p.device, motors=motors)
+        try:
+            bus.connect(handshake=False)
+        except Exception as exc:
+            print(f"{p.device}: cannot open port - {exc}")
+            ok_everywhere = False
+            continue
+        marks = []
+        try:
+            for name in MOTOR_NAMES:
+                try:
+                    answered = bus.ping(name, num_retry=2) is not None
+                except Exception:
+                    answered = False
+                marks.append("O" if answered else "X")
+                ok_everywhere = ok_everywhere and answered
+        finally:
+            bus.disconnect(disable_torque=False)
+        cells = " ".join(f"{i + 1}:{m}" for i, m in enumerate(marks))
+        print(f"{p.device} serial={p.serial_number}  {cells}")
+
+    print()
+    if ok_everywhere:
+        print("every motor answered. Wiring and power are fine; a failed connect was")
+        print("just a dropped packet, which the adapters retry.")
+        return 0
+    print("some motors did not answer. Check power and the daisy-chain cable to the")
+    print("first motor marked X - the chain ends at the gripper (id 6).")
+    return 1
+
+
 def check_sides(config_path: str, kind: str, seconds: float) -> int:
     """한 팔만 움직였을 때 배열의 그 절반만 변하는지 확인한다.
 
@@ -171,6 +223,9 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument(
         "--check-sides", action="store_true", help="verify left/right are not swapped in the config"
     )
+    group.add_argument(
+        "--scan-motors", action="store_true", help="ping motors 1-6 on every arm individually"
+    )
     parser.add_argument("--config", default="config/workbench.yaml")
     parser.add_argument(
         "--kind", choices=["follower", "leader"], default="follower", help="which arms to open"
@@ -188,6 +243,8 @@ def main(argv: list[str] | None = None) -> int:
         return probe_arms(args.config, args.kind)
     if args.check_sides:
         return check_sides(args.config, args.kind, args.seconds)
+    if args.scan_motors:
+        return scan_motors()
     return probe_cameras(args.max_index)
 
 

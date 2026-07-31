@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Sequence
 
 from lerobot.robots.so_follower import SOFollower, SOFollowerRobotConfig
@@ -17,6 +18,16 @@ from common.joints import ARM_SIDES, require_both_sides, to_arrays, to_dicts
 from common.serial_ports import resolve_port_spec
 
 log = logging.getLogger(__name__)
+
+#: 연결을 몇 번까지 다시 시도할 것인가.
+#:
+#: lerobot 의 ``enable_torque`` 는 ``num_retry=0`` 으로 쓰기 때문에, 1Mbaud 반이중
+#: 버스에서 패킷 하나만 유실되면 connect() 전체가 ConnectionError 로 죽는다.
+#: (실측: "Failed to write 'Lock' on id_=6 ... There is no status packet!" 이 뜬 직후
+#: 모터 6개를 num_retry=2 로 핑하면 전부 응답했다.) lerobot 자신도 disconnect 경로에는
+#: ``disable_torque(num_retry=5)`` 를 쓴다 - 켜는 경로에만 방어가 빠져 있다.
+_CONNECT_RETRIES = 4
+_CONNECT_RETRY_DELAY = 0.5
 
 
 class RealFollowerArms:
@@ -41,6 +52,12 @@ class RealFollowerArms:
             arm = self._arms[side]
             port = resolve_port_spec(arm.serial_number, arm.port)
             log.info("follower %s: opening %s (calibration id %s)", side, port, arm.calibration_id)
+            self._buses[side] = self._connect_one(side, port, arm)
+
+    def _connect_one(self, side: str, port: str, arm: ArmConfig) -> SOFollower:
+        """팔 한 대를 연결한다. 버스가 패킷을 흘리면 다시 시도한다."""
+        last_error: Exception | None = None
+        for attempt in range(1, _CONNECT_RETRIES + 1):
             robot = SOFollower(
                 SOFollowerRobotConfig(
                     port=port,
@@ -54,14 +71,41 @@ class RealFollowerArms:
                     cameras={},
                 )
             )
-            robot.connect(calibrate=False)
+            try:
+                robot.connect(calibrate=False)
+            except Exception as exc:
+                last_error = exc
+                log.warning(
+                    "follower %s: connect attempt %d/%d failed on %s: %s",
+                    side,
+                    attempt,
+                    _CONNECT_RETRIES,
+                    port,
+                    exc,
+                )
+                # 반쯤 열린 포트를 남기면 다음 시도가 '포트 사용 중'으로 실패한다.
+                try:
+                    robot.bus.disconnect(disable_torque=False)
+                except Exception:
+                    pass
+                time.sleep(_CONNECT_RETRY_DELAY)
+                continue
+
             # lerobot 의 configure() 는 torque_disabled() 컨텍스트를 쓰는데, 그 매니저는
             # "종료 시 토크를 반드시 다시 켠다"고 문서에 명시돼 있다. 즉 연결만 해도
             # 팔이 통전된다. 스펙 §5.1 의 DISCONNECTED 는 토크가 꺼진 상태이므로,
             # 여기서 명시적으로 끈다. 조종자가 아직 붙지도 않았는데 팔이 힘을 주고
             # 서 있을 이유가 없고, 작업대의 사람이 손으로 치울 수 있어야 한다.
-            robot.bus.disable_torque()
-            self._buses[side] = robot
+            robot.bus.disable_torque(num_retry=5)
+            if attempt > 1:
+                log.info("follower %s: connected on attempt %d", side, attempt)
+            return robot
+
+        raise ConnectionError(
+            f"follower {side}: could not connect on {port} after {_CONNECT_RETRIES} attempts. "
+            f"Last error: {last_error}. Check power and the daisy-chain cables; "
+            f"'python -m tools.probe_hardware --scan-motors' shows which motors answer."
+        ) from last_error
 
     def _require_connected(self) -> None:
         if not self._buses:
