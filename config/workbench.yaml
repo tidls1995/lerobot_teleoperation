@@ -25,6 +25,32 @@ safety:
   #
   # 이것은 팔의 '기구학적' 한계다. 작업대에 실제 장비를 배치한 뒤에는
   # 팔이 그 장비를 치는 자세를 배제하도록 여기서 더 좁혀야 한다.
+  # HOLD 에서 R 로 리셋했을 때 팔로워가 되돌아갈 자세 (스펙 §5.1.1).
+  # 2026-07-31 에 리더 암에서 떠온 값이다 (tools/capture_home_pose).
+  # 리더에서 뜨는 이유: 호밍이 끝나면 조종자가 리더를 이 자세에 맞춰야 정렬이
+  # 끝나므로, 리더가 도달할 수 있는 자세여야 한다.
+  #
+  # elbow_flex 만 실측값 97.3 에서 85.0 으로 낮췄다. 97.3 은 캘리브레이션에 기록된
+  # 가동범위 최대치와 같아 팔꿈치가 끝단에 붙은 자세이고, 아래 joint_limits(89/90)
+  # 밖이라 설정 검증이 거부한다. 더 접힌 자세가 필요하면 실제 기구학적 스톱을
+  # 확인한 뒤 joint_limits 를 넓혀야 한다.
+  home_pose:
+    left_shoulder_pan:     5.1     # deg
+    left_shoulder_lift:  -95.0     # deg
+    left_elbow_flex:      85.0     # deg  (실측 97.3 -> 한계 안으로 낮춤)
+    left_wrist_flex:      44.4     # deg
+    left_wrist_roll:      -9.9     # deg
+    left_gripper:          2.1     # percent
+    right_shoulder_pan:   -7.4     # deg
+    right_shoulder_lift: -90.7     # deg
+    right_elbow_flex:     85.0     # deg  (실측 97.3 -> 한계 안으로 낮춤)
+    right_wrist_flex:     45.1     # deg
+    right_wrist_roll:      7.3     # deg
+    right_gripper:         1.4     # percent
+
+  homing_max_step: 0.5          # 호밍 속도. 60Hz 기준 30도/초 (조종은 90도/초)
+  homing_tolerance: 1.0         # 이 안으로 들어오면 호밍 완료
+
   joint_limits:
     left_shoulder_pan:   [-101.0, 101.0]     # 실측 +-109.4
     left_shoulder_lift:  [-102.0, 102.0]     # 실측 +-110.2
