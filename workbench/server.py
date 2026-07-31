@@ -74,6 +74,13 @@ class TeleopServer:
         self._sock = sock
         self.control_port = sock.getsockname()[1]
 
+        # 실물 어댑터는 여기서 시리얼 포트를 연다. mock 에는 connect() 가 없다.
+        # 포트를 못 잡았으면 하드웨어를 건드리지 않고 죽는 편이 낫기 때문에
+        # 바인드 뒤에 둔다.
+        connect = getattr(self._follower, "connect", None)
+        if callable(connect):
+            connect()
+
         if self._video is not None:
             self._video.start()
 
@@ -215,26 +222,37 @@ class TeleopServer:
 def build_server(cfg: WorkbenchConfig) -> tuple[TeleopServer, list[CameraPublisher]]:
     """설정에 따라 mock/실물을 조립한다.
 
-    1단계에서는 use_mock 이 반드시 true 여야 한다. 실물 어댑터는 2단계에서
-    추가된다.
+    조립 시점에는 하드웨어를 만지지 않는다. 실제 시리얼 포트와 카메라를 여는
+    것은 TeleopServer.start() 와 CameraPublisher.start() 다.
     """
-    if not cfg.use_mock:
-        raise NotImplementedError(
-            "real hardware adapters land in stage 2; set use_mock: true in the config"
-        )
+    if cfg.use_mock:
+        from mock.fake_arms import FakeFollowerArms
+        from mock.fake_cameras import FakeCamera
 
-    from mock.fake_arms import FakeFollowerArms
-    from mock.fake_cameras import FakeCamera
+        follower = FakeFollowerArms()
+        cameras = [
+            FakeCamera(cam_id=c.id, name=c.name, width=c.width, height=c.height) for c in cfg.cameras
+        ]
+    else:
+        from workbench.follower_arms import RealFollowerArms
+        from workbench.usb_camera import UsbCamera
 
-    follower = FakeFollowerArms()
+        if not cfg.arms:
+            raise ValueError(
+                "use_mock is false but the config has no 'arms' section; "
+                "add serial numbers for the follower arms"
+            )
+        follower = RealFollowerArms(arms=cfg.arms)
+        cameras = [
+            UsbCamera(
+                cam_id=c.id, name=c.name, index=c.index, width=c.width, height=c.height, fps=c.fps
+            )
+            for c in cfg.cameras
+        ]
+
     publishers = [
-        CameraPublisher(
-            camera=FakeCamera(cam_id=c.id, name=c.name, width=c.width, height=c.height),
-            cam_id=c.id,
-            fps=c.fps,
-            jpeg_quality=c.jpeg_quality,
-        )
-        for c in cfg.cameras
+        CameraPublisher(camera=cam, cam_id=c.id, fps=c.fps, jpeg_quality=c.jpeg_quality)
+        for cam, c in zip(cameras, cfg.cameras)
     ]
     video = VideoServer(port=cfg.video_port, publishers=publishers)
     return TeleopServer(cfg=cfg, follower=follower, video=video), publishers

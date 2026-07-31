@@ -259,9 +259,32 @@ class LeaderSender:
                 self._rate_since = now
 
 
+def build_leader(cfg: HomeConfig):
+    """설정에 따라 mock/실물 리더를 만든다. 하드웨어는 아직 만지지 않는다."""
+    if cfg.use_mock:
+        from mock.fake_arms import FakeLeaderArms
+
+        return FakeLeaderArms()
+
+    from home.leader_arms import RealLeaderArms
+
+    if not cfg.arms:
+        raise ValueError(
+            "use_mock is false but the config has no 'arms' section; "
+            "add serial numbers for the leader arms"
+        )
+    return RealLeaderArms(arms=cfg.arms)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SO-101 teleoperation home client")
     parser.add_argument("--config", default="config/home.yaml")
+    parser.add_argument(
+        "--cameras",
+        type=int,
+        default=3,
+        help="how many camera panes to show (0 for the no-camera bring-up)",
+    )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
 
@@ -271,19 +294,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     cfg: HomeConfig = load_home_config(args.config)
 
-    if not cfg.use_mock:
-        raise NotImplementedError(
-            "real leader arms land in stage 2; set use_mock: true in the config"
-        )
-
     from home.hud import Hud, HudStats
     from home.video_recv import VideoClient
-    from mock.fake_arms import FakeLeaderArms
 
-    leader = FakeLeaderArms()
+    leader = build_leader(cfg)
+    connect = getattr(leader, "connect", None)
+    if callable(connect):
+        connect()
+
     link = ControlLink(host=cfg.server_host, port=cfg.control_port)
     video = VideoClient(host=cfg.server_host, port=cfg.video_port)
-    cam_ids = [0, 1, 2]
+    cam_ids = list(range(args.cameras))
     hud = Hud(cam_ids=cam_ids, cam_names={0: "front", 1: "wrist_left", 2: "wrist_right"})
 
     commands = CommandState()
@@ -299,7 +320,8 @@ def main(argv: list[str] | None = None) -> int:
             action = hud.poll(now)
             if action.quit:
                 break
-            if action.toggle_motion:
+            # M 키는 mock 리더 전용이다. 실물 리더에는 motion_enabled 가 없다.
+            if action.toggle_motion and hasattr(leader, "motion_enabled"):
                 leader.motion_enabled = not leader.motion_enabled
                 log.info("mock leader motion: %s", leader.motion_enabled)
 
