@@ -19,19 +19,25 @@ safety:
   follow_error_deg: 15.0        # 이 이상 벌어지면 걸림 의심
   follow_error_hold_ms: 500     # 그 상태가 이만큼 지속되면 HOLD
   watchdog_ms: 200              # 제어 패킷 무수신 허용 시간
-  joint_limits:                 # 1단계 임시값. 2단계에서 실제 장비 배치를 보고 확정한다.
-    left_shoulder_pan:   [-120.0, 120.0]
-    left_shoulder_lift:  [-120.0, 120.0]
-    left_elbow_flex:     [-120.0, 120.0]
-    left_wrist_flex:     [-120.0, 120.0]
-    left_wrist_roll:     [-120.0, 120.0]
-    left_gripper:        [0.0, 100.0]        # 퍼센트 단위 (도가 아님)
-    right_shoulder_pan:  [-120.0, 120.0]
-    right_shoulder_lift: [-120.0, 120.0]
-    right_elbow_flex:    [-120.0, 120.0]
-    right_wrist_flex:    [-120.0, 120.0]
-    right_wrist_roll:    [-120.0, 120.0]
-    right_gripper:       [0.0, 100.0]        # 퍼센트 단위 (도가 아님)
+  # 2026-07-31 실측. 캘리브레이션 파일의 range_min/range_max 를 도로 변환한 뒤
+  # (도 = (raw - (min+max)/2) * 360 / 4095) 양쪽으로 8도씩 좁힌 값이다.
+  # 참고: 이전의 +-120 은 실제 가동범위보다 넓어서 클램프가 사실상 무효였다.
+  #
+  # 이것은 팔의 '기구학적' 한계다. 작업대에 실제 장비를 배치한 뒤에는
+  # 팔이 그 장비를 치는 자세를 배제하도록 여기서 더 좁혀야 한다.
+  joint_limits:
+    left_shoulder_pan:   [-101.0, 101.0]     # 실측 +-109.4
+    left_shoulder_lift:  [-102.0, 102.0]     # 실측 +-110.2
+    left_elbow_flex:     [ -89.0,  89.0]     # 실측 +-97.3
+    left_wrist_flex:     [ -93.0,  93.0]     # 실측 +-101.3
+    left_wrist_roll:     [-170.0, 170.0]     # 실측 +-180 (한 바퀴). 되감김 방지로 170
+    left_gripper:        [   0.0, 100.0]     # 퍼센트 단위 (도가 아님)
+    right_shoulder_pan:  [-104.0, 104.0]     # 실측 +-112.8
+    right_shoulder_lift: [ -97.0,  97.0]     # 실측 +-105.4
+    right_elbow_flex:    [ -90.0,  90.0]     # 실측 +-98.1
+    right_wrist_flex:    [ -96.0,  96.0]     # 실측 +-104.2
+    right_wrist_roll:    [-170.0, 170.0]     # 실측 +-180 (한 바퀴). 되감김 방지로 170
+    right_gripper:       [   0.0, 100.0]     # 퍼센트 단위 (도가 아님)
 
 # 팔로워 암 2대. 2026-07-31 실측.
 # COM 번호는 재부팅하면 바뀔 수 있으므로 시리얼 번호로 지정한다.
