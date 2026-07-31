@@ -73,6 +73,17 @@ class CameraPublisher:
     def start(self) -> None:
         if self._thread is not None:
             return
+        # 실물 카메라는 여기서 장치를 연다. mock 에는 open() 이 없다.
+        opener = getattr(self._camera, "open", None)
+        if callable(opener):
+            try:
+                opener()
+            except Exception:
+                # 카메라 1대 때문에 조종 전체를 못 하게 만들지 않는다 (스펙 §9).
+                # 이 퍼블리셔는 스레드를 띄우지 않고, latest() 는 None 으로 남는다.
+                # 클라이언트 화면에는 그 칸만 "no signal" 로 뜬다.
+                log.exception("camera %d: open failed, this camera is disabled", self._cam_id)
+                return
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name=f"cam{self._cam_id}", daemon=True)
         self._thread.start()

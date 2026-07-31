@@ -149,3 +149,48 @@ def test_second_video_server_cannot_steal_the_port():
             second.start()
     finally:
         first.stop()
+
+
+# --- 2단계: 카메라 1대 실패가 전체를 죽이지 않아야 한다 (스펙 §9) ----------
+
+
+class UnopenableCamera:
+    def open(self):
+        raise OSError("device index 999 not present")
+
+    def read(self):
+        return None
+
+    def close(self):
+        pass
+
+
+def test_a_camera_that_fails_to_open_is_disabled_not_fatal():
+    pub = CameraPublisher(camera=UnopenableCamera(), cam_id=7, fps=15, jpeg_quality=80)
+    pub.start()  # 예외가 새어나오면 안 된다
+    try:
+        assert pub.latest() is None
+    finally:
+        pub.stop()
+
+
+def test_other_cameras_keep_streaming_when_one_fails_to_open():
+    good = make_publisher(cam_id=0)
+    bad = CameraPublisher(camera=UnopenableCamera(), cam_id=1, fps=15, jpeg_quality=80)
+    good.start()
+    bad.start()
+    server = VideoServer(port=0, publishers=[good, bad])
+    server.start()
+    try:
+        with socket.create_connection(("127.0.0.1", server.port), timeout=5.0) as sock:
+            sock.settimeout(5.0)
+            hb = recv_exactly(sock, VIDEO_HEADER_SIZE)
+            assert hb is not None
+            h = VideoHeader.unpack(hb)
+            assert h is not None
+            assert h.cam_id == 0  # 살아있는 카메라만 나간다
+            assert recv_exactly(sock, h.length) is not None
+    finally:
+        server.stop()
+        good.stop()
+        bad.stop()
