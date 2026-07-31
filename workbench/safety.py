@@ -109,9 +109,52 @@ class SafetyGate:
     # ------------------------------------------------------------------ #
 
     def _follow(self, packet: ControlPacket, actual: list[float], now: float) -> int:
-        """ENGAGED 에서 리더를 추종한다. Task 4 에서 클램프가 추가된다."""
-        self._applied = list(packet.joints)
-        return 0
+        """ENGAGED 에서 리더를 추종하되 세 가지 안전 클램프를 적용한다.
+
+        1. 관절 한계  - 목표가 물리적으로 허용된 범위 안인가
+        2. 속도 제한  - 한 프레임에 너무 멀리 가지 않는가
+        3. 추종 오차  - 팔이 뭔가에 걸려 있지 않은가 (감시만, 값은 안 바꿈)
+
+        순서가 중요하다. 먼저 관절 한계로 목표를 자르고, 그 목표를 향해
+        속도 제한만큼만 나아간다. 반대로 하면 한계 밖으로 넘어갈 수 있다.
+        """
+        assert self._applied is not None
+        cfg = self._cfg
+        flags = 0
+
+        # 3. 추종 오차 - 지난 프레임에 '쓴' 각도와 지금 실제각을 비교한다.
+        #    목표를 갱신하기 전에 판정해야 의미가 있다.
+        max_error = max(abs(self._applied[i] - actual[i]) for i in range(N_JOINTS))
+        if max_error > cfg.follow_error_deg:
+            flags |= Flag.FOLLOW_ERROR
+            if self._follow_error_since is None:
+                self._follow_error_since = now
+            elif (now - self._follow_error_since) >= cfg.follow_error_hold_ms / 1000.0:
+                self._to_hold("follow error - arm may be blocked", Flag.FOLLOW_ERROR)
+                return flags
+        else:
+            self._follow_error_since = None
+
+        targets: list[float] = []
+        for i, name in enumerate(JOINT_NAMES):
+            lo, hi = cfg.joint_limits[name]
+
+            # 1. 관절 한계
+            desired = packet.joints[i]
+            limited = min(max(desired, lo), hi)
+            if limited != desired:
+                flags |= Flag.JOINT_LIMITED
+
+            # 2. 속도 제한
+            delta = limited - self._applied[i]
+            step = min(max(delta, -cfg.max_step_deg), cfg.max_step_deg)
+            if step != delta:
+                flags |= Flag.SPEED_CLAMPED
+
+            targets.append(self._applied[i] + step)
+
+        self._applied = targets
+        return flags
 
     def _is_aligned(self, leader: tuple[float, ...], actual: list[float]) -> bool:
         threshold = self._cfg.align_threshold_deg
