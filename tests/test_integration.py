@@ -215,3 +215,83 @@ def test_leader_sender_keeps_sending_while_the_hud_thread_stalls(stack):
         assert sender.send_hz > 45.0
     finally:
         sender.stop()
+
+
+# --- 실물에서만 드러난 버그: 시리얼 포트 동시 접근 --------------------------
+
+
+class ConcurrencyDetectingLeader:
+    """읽기가 겹치면 실물 시리얼 포트처럼 실패하는 가짜 리더.
+
+    lerobot 의 MotorsBus 는 스레드 안전하지 않아, 두 스레드가 동시에 읽으면
+    "[TxRxResult] Port is in use!" 로 죽는다. FakeLeaderArms 는 순수 계산이라
+    이 버그를 잡지 못했다.
+    """
+
+    def __init__(self):
+        self._busy = False
+        self._guard = __import__("threading").Lock()
+        self.violations = 0
+
+    def read_positions(self):
+        with self._guard:
+            if self._busy:
+                self.violations += 1
+                raise RuntimeError("Port is in use!")
+            self._busy = True
+        try:
+            time.sleep(0.003)  # 시리얼 왕복 시간을 흉내낸다
+            return [0.0] * N_JOINTS
+        finally:
+            with self._guard:
+                self._busy = False
+
+    def close(self):
+        pass
+
+
+def test_the_fake_detects_overlapping_reads():
+    """위 가짜가 실제로 겹침을 잡아내는지 (아래 테스트의 의미를 보장한다)."""
+    import threading
+
+    leader = ConcurrencyDetectingLeader()
+    errors = []
+
+    def hammer():
+        for _ in range(30):
+            try:
+                leader.read_positions()
+            except RuntimeError as exc:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=hammer) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert leader.violations > 0, "가짜가 겹침을 못 잡으면 이 테스트는 무의미하다"
+
+
+def test_only_the_sender_thread_touches_the_leader(stack):
+    """화면 표시용 값은 송신 스레드가 읽은 것을 재사용해야 한다.
+
+    HUD 가 따로 read_positions() 를 부르면 실물에서 포트 충돌로 죽는다.
+    """
+    from home.client import CommandState, LeaderSender
+
+    _, _, link, _ = stack
+    leader = ConcurrencyDetectingLeader()
+    sender = LeaderSender(link=link, leader=leader, commands=CommandState(), rate_hz=60.0)
+    sender.start()
+    try:
+        # 송신 스레드가 읽은 값을 공개하므로 HUD 는 장치를 만질 필요가 없다
+        assert wait_until(lambda: sender.last_joints is not None)
+        # HUD 루프가 도는 것처럼 캐시를 반복 조회한다
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            joints = sender.last_joints
+            assert joints is not None and len(joints) == N_JOINTS
+            time.sleep(0.005)
+        assert leader.violations == 0, "리더를 동시에 읽은 스레드가 있다"
+    finally:
+        sender.stop()

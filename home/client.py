@@ -193,11 +193,27 @@ class LeaderSender:
         self._sent = 0
         self._rate_since = 0.0
         self._send_hz = 0.0
+        self._last_joints: list[float] | None = None
 
     @property
     def send_hz(self) -> float:
         with self._rate_lock:
             return self._send_hz
+
+    @property
+    def last_joints(self) -> list[float] | None:
+        """이 스레드가 마지막으로 읽어 보낸 관절각. 화면 표시용.
+
+        **HUD 는 리더를 직접 읽어서는 안 된다.** lerobot 의 MotorsBus 는 스레드
+        안전하지 않아, 두 스레드가 동시에 읽으면 시리얼 포트가
+        "[TxRxResult] Port is in use!" 로 죽는다. 장치의 소유자는 이 스레드
+        하나이고, 화면은 여기에 실린 값을 본다.
+
+        부수 효과로 시리얼 왕복이 절반으로 줄고, 화면에 뜨는 값이 **실제로 보낸
+        값**과 정확히 일치한다.
+        """
+        with self._rate_lock:
+            return None if self._last_joints is None else list(self._last_joints)
 
     def start(self) -> None:
         if self._thread is not None:
@@ -235,7 +251,10 @@ class LeaderSender:
             last_sent_at = now
 
             try:
-                self._link.send(joints=self._leader.read_positions(), clutch=clutch, reset=reset)
+                joints = self._leader.read_positions()
+                with self._rate_lock:
+                    self._last_joints = joints
+                self._link.send(joints=joints, clutch=clutch, reset=reset)
             except Exception:
                 log.exception("leader send failed")
             self._tick_rate()
@@ -330,7 +349,10 @@ def main(argv: list[str] | None = None) -> int:
             if action.reset:
                 commands.request_reset()
 
-            leader_joints = leader.read_positions()  # 화면 표시용
+            # 리더를 여기서 직접 읽지 않는다. 시리얼 포트는 스레드 안전하지 않아
+            # 송신 스레드와 겹치면 "Port is in use!" 로 죽는다. 송신 스레드가
+            # 읽어 공개한 값을 쓴다.
+            leader_joints = sender.last_joints
             got = link.latest_telemetry()
             telemetry = got[0] if got else None
             age_ms = (now - got[1]) * 1000.0 if got else None
