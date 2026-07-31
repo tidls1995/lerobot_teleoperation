@@ -4,3 +4,9 @@ control_port: 5555
 video_port: 5556
 use_mock: true             # 1단계: mock 리더 암 사용
 client_watchdog_ms: 300    # 텔레메트리 무수신 시 화면 경고까지의 시간
+
+# 리더 암 2대. Task 8 에서 실측한 시리얼 번호로 바꾼다.
+# 확인 방법: python -m tools.probe_hardware --ports
+arms:
+  left:  { serial_number: "CHANGEME_LEADER_LEFT",  calibration_id: "leader_left" }
+  right: { serial_number: "CHANGEME_LEADER_RIGHT", calibration_id: "leader_right" }

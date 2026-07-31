@@ -6,12 +6,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from common.joints import ARM_SIDES, GRIPPER_INDICES
 from common.protocol import JOINT_NAMES
 
 
@@ -31,6 +32,20 @@ class CameraConfig:
 
 
 @dataclass(frozen=True)
+class ArmConfig:
+    """팔 한 대를 어떻게 찾고 어떤 캘리브레이션을 쓸지.
+
+    serial_number 와 port 중 **정확히 하나**만 지정한다. 둘 다 주면 어느 쪽이
+    이겼는지 모르는 상태가 되고, 좌우가 뒤바뀐 채 조종을 시작할 수 있다.
+    """
+
+    side: str
+    serial_number: str | None
+    port: str | None
+    calibration_id: str
+
+
+@dataclass(frozen=True)
 class SafetyConfig:
     align_threshold_deg: float
     max_step_deg: float
@@ -38,6 +53,13 @@ class SafetyConfig:
     follow_error_hold_ms: int
     watchdog_ms: int
     joint_limits: dict[str, tuple[float, float]]
+    #: 그리퍼는 단위가 퍼센트(0~100)라 도 단위 값과 섞을 수 없다 (스펙 §4.3).
+    gripper_max_step: float = 4.0
+    gripper_limits: tuple[float, float] = (0.0, 100.0)
+
+    def max_step_for(self, index: int) -> float:
+        """이 관절의 프레임당 최대 이동량. 그리퍼만 다른 값을 쓴다."""
+        return self.gripper_max_step if index in GRIPPER_INDICES else self.max_step_deg
 
 
 @dataclass(frozen=True)
@@ -47,6 +69,7 @@ class WorkbenchConfig:
     video_port: int
     cameras: list[CameraConfig]
     safety: SafetyConfig
+    arms: dict[str, ArmConfig] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -56,6 +79,7 @@ class HomeConfig:
     video_port: int
     use_mock: bool
     client_watchdog_ms: int
+    arms: dict[str, ArmConfig] = field(default_factory=dict)
 
 
 def _read_yaml(path: str | Path) -> dict[str, Any]:
@@ -103,6 +127,11 @@ def _parse_joint_limits(raw: Any) -> dict[str, tuple[float, float]]:
         lo, hi = float(pair[0]), float(pair[1])
         if lo >= hi:
             raise ConfigError(f"joint_limits[{name}]: min ({lo}) must be less than max ({hi})")
+        if name.endswith("gripper") and not (0.0 <= lo < hi <= 100.0):
+            raise ConfigError(
+                f"joint_limits[{name}]: gripper units are percent, so limits must lie "
+                f"within [0, 100], got [{lo}, {hi}]"
+            )
         limits[name] = (lo, hi)
     return limits
 
@@ -110,6 +139,9 @@ def _parse_joint_limits(raw: Any) -> dict[str, tuple[float, float]]:
 def _parse_safety(raw: Any) -> SafetyConfig:
     if not isinstance(raw, dict):
         raise ConfigError("safety section must be a mapping")
+    gripper_limits = raw.get("gripper_limits", [0.0, 100.0])
+    if not (isinstance(gripper_limits, (list, tuple)) and len(gripper_limits) == 2):
+        raise ConfigError(f"safety.gripper_limits must be [min, max], got {gripper_limits!r}")
     return SafetyConfig(
         align_threshold_deg=float(_require(raw, "align_threshold_deg", "safety")),
         max_step_deg=float(_require(raw, "max_step_deg", "safety")),
@@ -117,12 +149,48 @@ def _parse_safety(raw: Any) -> SafetyConfig:
         follow_error_hold_ms=int(_require(raw, "follow_error_hold_ms", "safety")),
         watchdog_ms=int(_require(raw, "watchdog_ms", "safety")),
         joint_limits=_parse_joint_limits(_require(raw, "joint_limits", "safety")),
+        gripper_max_step=float(raw.get("gripper_max_step", 4.0)),
+        gripper_limits=(float(gripper_limits[0]), float(gripper_limits[1])),
     )
 
 
+def _parse_arms(raw: Any) -> dict[str, ArmConfig]:
+    if not isinstance(raw, dict):
+        raise ConfigError("arms must be a mapping of side to arm settings")
+
+    unknown = set(raw) - set(ARM_SIDES)
+    if unknown:
+        raise ConfigError(f"unknown arm side(s): {sorted(unknown)}, expected {list(ARM_SIDES)}")
+    missing = set(ARM_SIDES) - set(raw)
+    if missing:
+        raise ConfigError(f"arms is missing side(s): {sorted(missing)}")
+
+    arms: dict[str, ArmConfig] = {}
+    for side in ARM_SIDES:
+        entry = raw[side]
+        if not isinstance(entry, dict):
+            raise ConfigError(f"arms.{side} must be a mapping, got {entry!r}")
+        serial_number = entry.get("serial_number")
+        port = entry.get("port")
+        if (serial_number is None) == (port is None):
+            raise ConfigError(
+                f"arms.{side}: specify exactly one of 'serial_number' or 'port' "
+                "(serial_number is preferred; COM numbers move around)"
+            )
+        arms[side] = ArmConfig(
+            side=side,
+            serial_number=str(serial_number) if serial_number is not None else None,
+            port=str(port) if port is not None else None,
+            calibration_id=str(_require(entry, "calibration_id", f"arms.{side}")),
+        )
+    return arms
+
+
 def _parse_cameras(raw: Any) -> list[CameraConfig]:
-    if not isinstance(raw, list) or not raw:
-        raise ConfigError("cameras must be a non-empty list")
+    # 빈 목록을 허용한다. USB 포트가 부족해 카메라 없이 팔만 검증하는 구성이
+    # 있고(2단계-A), 카메라 0대는 오류가 아니라 선택이다.
+    if not isinstance(raw, list):
+        raise ConfigError(f"cameras must be a list, got {type(raw).__name__}")
     cams: list[CameraConfig] = []
     seen: set[int] = set()
     for entry in raw:
@@ -156,6 +224,7 @@ def load_workbench_config(path: str | Path) -> WorkbenchConfig:
         video_port=_check_port(_require(data, "video_port", "workbench config"), "video_port"),
         cameras=_parse_cameras(_require(data, "cameras", "workbench config")),
         safety=_parse_safety(_require(data, "safety", "workbench config")),
+        arms=_parse_arms(data["arms"]) if "arms" in data else {},
     )
 
 
@@ -167,4 +236,5 @@ def load_home_config(path: str | Path) -> HomeConfig:
         video_port=_check_port(_require(data, "video_port", "home config"), "video_port"),
         use_mock=bool(_require(data, "use_mock", "home config")),
         client_watchdog_ms=int(_require(data, "client_watchdog_ms", "home config")),
+        arms=_parse_arms(data["arms"]) if "arms" in data else {},
     )

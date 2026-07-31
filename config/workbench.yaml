@@ -10,7 +10,9 @@ cameras:
 
 safety:
   align_threshold_deg: 3.0      # ENGAGED 진입에 필요한 최대 정렬 오차
-  max_step_deg: 1.5             # 프레임당 최대 이동. 60Hz 기준 90도/초
+  max_step_deg: 1.5             # 몸통 관절. 프레임당 최대 이동, 60Hz 기준 90도/초
+  gripper_max_step: 4.0         # 그리퍼는 퍼센트 단위. 60Hz 기준 240%/초
+  gripper_limits: [0.0, 100.0]
   follow_error_deg: 15.0        # 이 이상 벌어지면 걸림 의심
   follow_error_hold_ms: 500     # 그 상태가 이만큼 지속되면 HOLD
   watchdog_ms: 200              # 제어 패킷 무수신 허용 시간
@@ -20,10 +22,16 @@ safety:
     left_elbow_flex:     [-120.0, 120.0]
     left_wrist_flex:     [-120.0, 120.0]
     left_wrist_roll:     [-120.0, 120.0]
-    left_gripper:        [-120.0, 120.0]
+    left_gripper:        [0.0, 100.0]        # 퍼센트 단위 (도가 아님)
     right_shoulder_pan:  [-120.0, 120.0]
     right_shoulder_lift: [-120.0, 120.0]
     right_elbow_flex:    [-120.0, 120.0]
     right_wrist_flex:    [-120.0, 120.0]
     right_wrist_roll:    [-120.0, 120.0]
-    right_gripper:       [-120.0, 120.0]
+    right_gripper:       [0.0, 100.0]        # 퍼센트 단위 (도가 아님)
+
+# 팔로워 암 2대. Task 8 에서 실측한 시리얼 번호로 바꾼다.
+# 확인 방법: python -m tools.probe_hardware --ports
+arms:
+  left:  { serial_number: "CHANGEME_FOLLOWER_LEFT",  calibration_id: "follower_left" }
+  right: { serial_number: "CHANGEME_FOLLOWER_RIGHT", calibration_id: "follower_right" }
