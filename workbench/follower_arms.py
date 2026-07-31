@@ -55,6 +55,12 @@ class RealFollowerArms:
                 )
             )
             robot.connect(calibrate=False)
+            # lerobot 의 configure() 는 torque_disabled() 컨텍스트를 쓰는데, 그 매니저는
+            # "종료 시 토크를 반드시 다시 켠다"고 문서에 명시돼 있다. 즉 연결만 해도
+            # 팔이 통전된다. 스펙 §5.1 의 DISCONNECTED 는 토크가 꺼진 상태이므로,
+            # 여기서 명시적으로 끈다. 조종자가 아직 붙지도 않았는데 팔이 힘을 주고
+            # 서 있을 이유가 없고, 작업대의 사람이 손으로 치울 수 있어야 한다.
+            robot.bus.disable_torque()
             self._buses[side] = robot
 
     def _require_connected(self) -> None:

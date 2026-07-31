@@ -79,6 +79,57 @@ def probe_arms(config_path: str, kind: str) -> int:
     return 0
 
 
+def check_sides(config_path: str, kind: str, seconds: float) -> int:
+    """한 팔만 움직였을 때 배열의 그 절반만 변하는지 확인한다.
+
+    좌우가 뒤바뀐 채로 조종을 시작하면 조종자가 왼쪽을 움직였는데 오른쪽 팔이
+    장비를 친다. 설정의 시리얼 번호가 뒤바뀌었는지 잡아내는 검증이다.
+    """
+    if kind == "follower":
+        from common.config import load_workbench_config
+        from workbench.follower_arms import RealFollowerArms
+
+        cfg = load_workbench_config(config_path)
+        arms = RealFollowerArms(arms=cfg.arms)
+    else:
+        from common.config import load_home_config
+        from home.leader_arms import RealLeaderArms
+
+        cfg = load_home_config(config_path)
+        arms = RealLeaderArms(arms=cfg.arms)
+
+    arms.connect()
+    try:
+        for side, expected in (("LEFT", slice(0, 6)), ("RIGHT", slice(6, 12))):
+            other = slice(6, 12) if expected.start == 0 else slice(0, 6)
+            input(f"\n>>> Move ONLY the {side} arm when you press ENTER ({seconds:.0f}s) ... ")
+            start = arms.read_positions()
+            deadline = time.monotonic() + seconds
+            moved = [0.0] * len(start)
+            while time.monotonic() < deadline:
+                now_pos = arms.read_positions()
+                for i, v in enumerate(now_pos):
+                    moved[i] = max(moved[i], abs(v - start[i]))
+
+            mine = max(moved[expected])
+            theirs = max(moved[other])
+            print(f"  {side} half moved at most {mine:6.1f}, other half {theirs:6.1f}")
+            if mine < 3.0:
+                print(f"  FAIL: the {side} arm barely moved - did you move it?")
+                return 1
+            if theirs > mine * 0.3:
+                print(
+                    f"  FAIL: the other half also moved. The two arms are probably swapped "
+                    f"in the config, or you moved both."
+                )
+                return 1
+            print(f"  OK: moving the {side} arm changes the {side} half of the array")
+        print("\nleft/right mapping is correct")
+    finally:
+        arms.close()
+    return 0
+
+
 def probe_cameras(max_index: int) -> int:
     """어느 인덱스에 카메라가 있는지, 실제 해상도와 프레임레이트가 얼마인지."""
     from workbench.usb_camera import CameraOpenError, UsbCamera
@@ -117,11 +168,15 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--ports", action="store_true", help="list serial ports and serial numbers")
     group.add_argument("--arms", action="store_true", help="open arms and read joint angles")
     group.add_argument("--cameras", action="store_true", help="scan camera indices")
+    group.add_argument(
+        "--check-sides", action="store_true", help="verify left/right are not swapped in the config"
+    )
     parser.add_argument("--config", default="config/workbench.yaml")
     parser.add_argument(
-        "--kind", choices=["follower", "leader"], default="follower", help="which arms --arms opens"
+        "--kind", choices=["follower", "leader"], default="follower", help="which arms to open"
     )
     parser.add_argument("--max-index", type=int, default=8, help="how many camera indices to scan")
+    parser.add_argument("--seconds", type=float, default=4.0, help="how long each --check-sides step waits")
     parser.add_argument("--log-level", default="WARNING")
     args = parser.parse_args(argv)
 
@@ -131,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
         return probe_ports()
     if args.arms:
         return probe_arms(args.config, args.kind)
+    if args.check_sides:
+        return check_sides(args.config, args.kind, args.seconds)
     return probe_cameras(args.max_index)
 
 
