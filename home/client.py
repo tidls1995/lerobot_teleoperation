@@ -135,6 +135,109 @@ class ControlLink:
                 self._telemetry = (telemetry, now)
 
 
+class CommandState:
+    """HUD 스레드가 쓰고 송신 스레드가 읽는 '최신 조종 입력'.
+
+    제어 송신을 화면 그리기와 **다른 스레드로 분리**하기 위한 통로다.
+    한 루프에 합치면 창을 드래그하는 것만으로도 pygame 이 수백 ms 멈추고,
+    그 사이 제어 패킷이 끊겨 서버 워치독이 터진다. 화면이 렉 걸린다고
+    로봇이 멈춰서는 안 된다.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._clutch = False
+        self._reset_pending = False
+
+    def set_clutch(self, value: bool) -> None:
+        with self._lock:
+            self._clutch = value
+
+    def request_reset(self) -> None:
+        with self._lock:
+            self._reset_pending = True
+
+    def take(self) -> tuple[bool, bool]:
+        """(clutch, reset) 을 읽는다. reset 은 정확히 한 번만 실린다."""
+        with self._lock:
+            reset, self._reset_pending = self._reset_pending, False
+            return self._clutch, reset
+
+
+class LeaderSender:
+    """리더를 읽어 60Hz 로 제어 패킷을 보내는 전용 스레드."""
+
+    def __init__(
+        self,
+        link: ControlLink,
+        leader,
+        commands: CommandState,
+        rate_hz: float = 60.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if rate_hz <= 0:
+            raise ValueError("rate_hz must be positive")
+        self._link = link
+        self._leader = leader
+        self._commands = commands
+        self._interval = 1.0 / rate_hz
+        self._clock = clock
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+        self._rate_lock = threading.Lock()
+        self._sent = 0
+        self._rate_since = 0.0
+        self._send_hz = 0.0
+
+    @property
+    def send_hz(self) -> float:
+        with self._rate_lock:
+            return self._send_hz
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        self._rate_since = self._clock()
+        self._thread = threading.Thread(target=self._loop, name="leader-send", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+    def _loop(self) -> None:
+        next_t = self._clock()
+        while not self._stop.is_set():
+            clutch, reset = self._commands.take()
+            try:
+                self._link.send(joints=self._leader.read_positions(), clutch=clutch, reset=reset)
+            except Exception:
+                log.exception("leader send failed")
+            self._tick_rate()
+
+            next_t += self._interval
+            remaining = next_t - self._clock()
+            if remaining > 0:
+                self._stop.wait(remaining)
+            else:
+                # 밀렸으면 몰아서 따라잡지 않는다. 밀린 만큼은 그냥 건너뛴다.
+                next_t = self._clock()
+
+    def _tick_rate(self) -> None:
+        now = self._clock()
+        with self._rate_lock:
+            self._sent += 1
+            elapsed = now - self._rate_since
+            if elapsed >= 0.5:
+                self._send_hz = self._sent / elapsed
+                self._sent = 0
+                self._rate_since = now
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SO-101 teleoperation home client")
     parser.add_argument("--config", default="config/home.yaml")
@@ -162,11 +265,13 @@ def main(argv: list[str] | None = None) -> int:
     cam_ids = [0, 1, 2]
     hud = Hud(cam_ids=cam_ids, cam_names={0: "front", 1: "wrist_left", 2: "wrist_right"})
 
+    commands = CommandState()
+    sender = LeaderSender(link=link, leader=leader, commands=commands)
+
     link.start()
     video.start()
+    sender.start()
 
-    send_interval = 1.0 / 60.0
-    next_send = time.monotonic()
     try:
         while True:
             now = time.monotonic()
@@ -177,11 +282,12 @@ def main(argv: list[str] | None = None) -> int:
                 leader.motion_enabled = not leader.motion_enabled
                 log.info("mock leader motion: %s", leader.motion_enabled)
 
-            leader_joints = leader.read_positions()
-            if now >= next_send:
-                link.send(joints=leader_joints, clutch=action.clutch, reset=action.reset)
-                next_send = now + send_interval
+            # 제어 송신은 별도 스레드가 한다. 여기서는 최신 입력만 넘긴다.
+            commands.set_clutch(action.clutch)
+            if action.reset:
+                commands.request_reset()
 
+            leader_joints = leader.read_positions()  # 화면 표시용
             got = link.latest_telemetry()
             telemetry = got[0] if got else None
             age_ms = (now - got[1]) * 1000.0 if got else None
@@ -200,14 +306,16 @@ def main(argv: list[str] | None = None) -> int:
                     lost_packets=link.lost_packets,
                     video_connected=video.connected,
                     telemetry_age_ms=age_ms,
+                    send_hz=sender.send_hz,
                 ),
                 align_threshold_deg=3.0,
                 now=now,
             )
-            time.sleep(0.002)
+            time.sleep(0.01)
     except KeyboardInterrupt:
         pass
     finally:
+        sender.stop()
         hud.close()
         video.stop()
         link.stop()

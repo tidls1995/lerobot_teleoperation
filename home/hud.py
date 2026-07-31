@@ -62,6 +62,8 @@ class HudStats:
     lost_packets: int
     video_connected: bool
     telemetry_age_ms: float | None
+    #: 제어 패킷 실제 송신 레이트. 60Hz 아래로 떨어지면 워치독 위험 신호다.
+    send_hz: float = 0.0
 
 
 class ClutchTracker:
@@ -191,9 +193,9 @@ class Hud:
             self._screen.blit(self._small.render(label, True, _FG), (x + 4, y + pane_h + 3))
 
     def _draw_joint_bars(self, telemetry, leader_joints: list[float] | None, threshold: float) -> None:
-        top = 290
+        top = 312
         self._screen.blit(
-            self._font.render("alignment error (leader vs follower)", True, _DIM), (16, top - 20)
+            self._font.render("alignment error (leader vs follower)", True, _DIM), (16, top - 32)
         )
         if telemetry is None or leader_joints is None:
             self._screen.blit(self._font.render("waiting for telemetry...", True, _DIM), (16, top))
@@ -220,12 +222,15 @@ class Hud:
 
         rtt = f"{stats.rtt_ms:5.1f} ms" if stats.rtt_ms is not None else "  --  "
         lines = [
-            f"RTT      {rtt}",
-            f"lost     {stats.lost_packets}",
-            f"video    {'connected' if stats.video_connected else 'DISCONNECTED'}",
+            (f"RTT      {rtt}", _FG),
+            (f"lost     {stats.lost_packets}", _FG),
+            (f"video    {'connected' if stats.video_connected else 'DISCONNECTED'}",
+             _FG if stats.video_connected else _RED),
+            # 60Hz 아래로 떨어지면 화면 렉이 제어를 밀어내고 있다는 뜻이다.
+            (f"send     {stats.send_hz:4.0f} Hz", _FG if stats.send_hz >= 45.0 else _AMBER),
         ]
-        for i, line in enumerate(lines):
-            self._screen.blit(self._font.render(line, True, _FG), (240, y + i * 19))
+        for i, (line, color) in enumerate(lines):
+            self._screen.blit(self._font.render(line, True, color), (240, y + i * 19))
 
         flags = telemetry.flags if telemetry is not None else 0
         for i, (flag, label) in enumerate(_FLAG_LABELS):

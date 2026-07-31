@@ -172,3 +172,46 @@ def test_blocked_arm_triggers_follow_error_hold():
     finally:
         link.stop()
         server.stop()
+
+
+# --- 제어 송신과 화면 그리기의 분리 (실행 중 발견한 결함) --------------------
+
+
+def test_command_state_reset_fires_exactly_once():
+    from home.client import CommandState
+
+    cs = CommandState()
+    cs.request_reset()
+    assert cs.take() == (False, True)
+    assert cs.take() == (False, False)
+
+
+def test_command_state_clutch_is_level_not_edge():
+    from home.client import CommandState
+
+    cs = CommandState()
+    cs.set_clutch(True)
+    assert cs.take()[0] is True
+    assert cs.take()[0] is True  # 읽어도 유지된다
+    cs.set_clutch(False)
+    assert cs.take()[0] is False
+
+
+def test_leader_sender_keeps_sending_while_the_hud_thread_stalls(stack):
+    """화면이 멈춰도 제어 패킷은 계속 나가야 한다 (워치독 오발동 방지)."""
+    from home.client import CommandState, LeaderSender
+
+    _, _, link, _ = stack
+    leader = FakeLeaderArms()
+    sender = LeaderSender(link=link, leader=leader, commands=CommandState(), rate_hz=60.0)
+    sender.start()
+    try:
+        assert wait_until(lambda: _telemetry_state(link) is State.ALIGNING)
+        # HUD 스레드가 700ms 멈춘 상황을 흉내낸다 (창 드래그 등).
+        # 워치독 200ms 의 3배를 넘지만 송신 스레드가 살아있으므로 HOLD 로 가면 안 된다.
+        # 0.5초는 send_hz 측정 창이 최소 한 번 닫히는 데도 필요하다.
+        time.sleep(0.7)
+        assert _telemetry_state(link) is State.ALIGNING, "제어 스레드가 살아있으면 HOLD 로 가면 안 된다"
+        assert sender.send_hz > 45.0
+    finally:
+        sender.stop()
