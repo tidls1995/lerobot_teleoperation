@@ -1,0 +1,29 @@
+# 작업대(서버) 설정
+use_mock: true          # 1단계: mock 장치 사용. 2단계에서 false 로.
+control_port: 5555      # UDP - 제어 + 텔레메트리
+video_port: 5556        # TCP - 영상 3채널 다중화
+
+cameras:
+  - { id: 0, name: front,       index: 0, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
+  - { id: 1, name: wrist_left,  index: 1, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
+  - { id: 2, name: wrist_right, index: 2, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
+
+safety:
+  align_threshold_deg: 3.0      # ENGAGED 진입에 필요한 최대 정렬 오차
+  max_step_deg: 1.5             # 프레임당 최대 이동. 60Hz 기준 90도/초
+  follow_error_deg: 15.0        # 이 이상 벌어지면 걸림 의심
+  follow_error_hold_ms: 500     # 그 상태가 이만큼 지속되면 HOLD
+  watchdog_ms: 200              # 제어 패킷 무수신 허용 시간
+  joint_limits:                 # 1단계 임시값. 2단계에서 실제 장비 배치를 보고 확정한다.
+    left_shoulder_pan:   [-120.0, 120.0]
+    left_shoulder_lift:  [-120.0, 120.0]
+    left_elbow_flex:     [-120.0, 120.0]
+    left_wrist_flex:     [-120.0, 120.0]
+    left_wrist_roll:     [-120.0, 120.0]
+    left_gripper:        [-120.0, 120.0]
+    right_shoulder_pan:  [-120.0, 120.0]
+    right_shoulder_lift: [-120.0, 120.0]
+    right_elbow_flex:    [-120.0, 120.0]
+    right_wrist_flex:    [-120.0, 120.0]
+    right_wrist_roll:    [-120.0, 120.0]
+    right_gripper:       [-120.0, 120.0]

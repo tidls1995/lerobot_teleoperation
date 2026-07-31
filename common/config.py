@@ -1,0 +1,170 @@
+"""YAML 설정 파일을 데이터클래스로 읽어들이고 검증한다.
+
+검증을 여기서 강하게 하는 이유: 관절 한계가 하나라도 빠지면 그 관절에는
+안전 클램프가 걸리지 않는다. 조용히 통과시키는 것보다 기동 시 죽는 편이 낫다.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from common.protocol import JOINT_NAMES
+
+
+class ConfigError(Exception):
+    """설정 파일이 유효하지 않다."""
+
+
+@dataclass(frozen=True)
+class CameraConfig:
+    id: int
+    name: str
+    index: int
+    width: int
+    height: int
+    fps: int
+    jpeg_quality: int
+
+
+@dataclass(frozen=True)
+class SafetyConfig:
+    align_threshold_deg: float
+    max_step_deg: float
+    follow_error_deg: float
+    follow_error_hold_ms: int
+    watchdog_ms: int
+    joint_limits: dict[str, tuple[float, float]]
+
+
+@dataclass(frozen=True)
+class WorkbenchConfig:
+    use_mock: bool
+    control_port: int
+    video_port: int
+    cameras: list[CameraConfig]
+    safety: SafetyConfig
+
+
+@dataclass(frozen=True)
+class HomeConfig:
+    server_host: str
+    control_port: int
+    video_port: int
+    use_mock: bool
+    client_watchdog_ms: int
+
+
+def _read_yaml(path: str | Path) -> dict[str, Any]:
+    p = Path(path)
+    if not p.is_file():
+        raise ConfigError(f"config file not found: {p}")
+    try:
+        data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"invalid YAML in {p}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"config root must be a mapping: {p}")
+    return data
+
+
+def _require(data: dict[str, Any], key: str, where: str) -> Any:
+    if key not in data:
+        raise ConfigError(f"missing required key '{key}' in {where}")
+    return data[key]
+
+
+def _check_port(value: Any, key: str) -> int:
+    if not isinstance(value, int) or not (1024 <= value <= 65535):
+        raise ConfigError(f"{key}: port must be an integer in 1024..65535, got {value!r}")
+    return value
+
+
+def _parse_joint_limits(raw: Any) -> dict[str, tuple[float, float]]:
+    if not isinstance(raw, dict):
+        raise ConfigError("safety.joint_limits must be a mapping of joint name to [min, max]")
+
+    unknown = set(raw) - set(JOINT_NAMES)
+    if unknown:
+        raise ConfigError(f"unknown joint name(s) in joint_limits: {sorted(unknown)}")
+
+    missing = set(JOINT_NAMES) - set(raw)
+    if missing:
+        raise ConfigError(f"joint_limits is missing entries for: {sorted(missing)}")
+
+    limits: dict[str, tuple[float, float]] = {}
+    for name in JOINT_NAMES:
+        pair = raw[name]
+        if not (isinstance(pair, (list, tuple)) and len(pair) == 2):
+            raise ConfigError(f"joint_limits[{name}] must be [min, max], got {pair!r}")
+        lo, hi = float(pair[0]), float(pair[1])
+        if lo >= hi:
+            raise ConfigError(f"joint_limits[{name}]: min ({lo}) must be less than max ({hi})")
+        limits[name] = (lo, hi)
+    return limits
+
+
+def _parse_safety(raw: Any) -> SafetyConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("safety section must be a mapping")
+    return SafetyConfig(
+        align_threshold_deg=float(_require(raw, "align_threshold_deg", "safety")),
+        max_step_deg=float(_require(raw, "max_step_deg", "safety")),
+        follow_error_deg=float(_require(raw, "follow_error_deg", "safety")),
+        follow_error_hold_ms=int(_require(raw, "follow_error_hold_ms", "safety")),
+        watchdog_ms=int(_require(raw, "watchdog_ms", "safety")),
+        joint_limits=_parse_joint_limits(_require(raw, "joint_limits", "safety")),
+    )
+
+
+def _parse_cameras(raw: Any) -> list[CameraConfig]:
+    if not isinstance(raw, list) or not raw:
+        raise ConfigError("cameras must be a non-empty list")
+    cams: list[CameraConfig] = []
+    seen: set[int] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ConfigError(f"camera entry must be a mapping, got {entry!r}")
+        cam = CameraConfig(
+            id=int(_require(entry, "id", "camera")),
+            name=str(_require(entry, "name", "camera")),
+            index=int(_require(entry, "index", "camera")),
+            width=int(_require(entry, "width", "camera")),
+            height=int(_require(entry, "height", "camera")),
+            fps=int(_require(entry, "fps", "camera")),
+            jpeg_quality=int(_require(entry, "jpeg_quality", "camera")),
+        )
+        if cam.id in seen:
+            raise ConfigError(f"duplicate camera id: {cam.id}")
+        if not (0 <= cam.jpeg_quality <= 100):
+            raise ConfigError(f"camera {cam.id}: jpeg_quality must be 0..100")
+        if cam.fps <= 0:
+            raise ConfigError(f"camera {cam.id}: fps must be positive")
+        seen.add(cam.id)
+        cams.append(cam)
+    return cams
+
+
+def load_workbench_config(path: str | Path) -> WorkbenchConfig:
+    data = _read_yaml(path)
+    return WorkbenchConfig(
+        use_mock=bool(_require(data, "use_mock", "workbench config")),
+        control_port=_check_port(_require(data, "control_port", "workbench config"), "control_port"),
+        video_port=_check_port(_require(data, "video_port", "workbench config"), "video_port"),
+        cameras=_parse_cameras(_require(data, "cameras", "workbench config")),
+        safety=_parse_safety(_require(data, "safety", "workbench config")),
+    )
+
+
+def load_home_config(path: str | Path) -> HomeConfig:
+    data = _read_yaml(path)
+    return HomeConfig(
+        server_host=str(_require(data, "server_host", "home config")),
+        control_port=_check_port(_require(data, "control_port", "home config"), "control_port"),
+        video_port=_check_port(_require(data, "video_port", "home config"), "video_port"),
+        use_mock=bool(_require(data, "use_mock", "home config")),
+        client_watchdog_ms=int(_require(data, "client_watchdog_ms", "home config")),
+    )

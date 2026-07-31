@@ -1,0 +1,6 @@
+# 집(클라이언트) 설정
+server_host: "127.0.0.1"   # 1단계: localhost. 4단계에서 작업대 공인 IP 로.
+control_port: 5555
+video_port: 5556
+use_mock: true             # 1단계: mock 리더 암 사용
+client_watchdog_ms: 300    # 텔레메트리 무수신 시 화면 경고까지의 시간

@@ -514,44 +514,43 @@ cd "C:/Users/flash/Desktop/lerobot/remote teleoperation" && git add -A && git co
 `tests/test_config.py`:
 
 ```python
-import textwrap
-
 import pytest
 
 from common.config import ConfigError, load_home_config, load_workbench_config
 from common.protocol import JOINT_NAMES
 
-FULL_LIMITS = "\n".join(f"      {name}: [-120.0, 120.0]" for name in JOINT_NAMES)
+# YAML 은 들여쓰기가 곧 구조다. textwrap.dedent 를 쓰면 삽입된 블록과 본문의
+# 들여쓰기가 서로 다르게 깎여 계층이 무너지므로, 여기서는 그대로 적는다.
+LIMIT_INDENT = "    "
+FULL_LIMITS = "\n".join(f"{LIMIT_INDENT}{name}: [-120.0, 120.0]" for name in JOINT_NAMES)
 
-WORKBENCH_YAML = textwrap.dedent(
-    f"""\
-    use_mock: true
-    control_port: 5555
-    video_port: 5556
-    cameras:
-      - {{ id: 0, name: front,       index: 0, width: 320, height: 240, fps: 15, jpeg_quality: 80 }}
-      - {{ id: 1, name: wrist_left,  index: 1, width: 320, height: 240, fps: 15, jpeg_quality: 80 }}
-      - {{ id: 2, name: wrist_right, index: 2, width: 320, height: 240, fps: 15, jpeg_quality: 80 }}
-    safety:
-      align_threshold_deg: 3.0
-      max_step_deg: 1.5
-      follow_error_deg: 15.0
-      follow_error_hold_ms: 500
-      watchdog_ms: 200
-      joint_limits:
+WORKBENCH_YAML = f"""use_mock: true
+control_port: 5555
+video_port: 5556
+cameras:
+  - {{ id: 0, name: front,       index: 0, width: 320, height: 240, fps: 15, jpeg_quality: 80 }}
+  - {{ id: 1, name: wrist_left,  index: 1, width: 320, height: 240, fps: 15, jpeg_quality: 80 }}
+  - {{ id: 2, name: wrist_right, index: 2, width: 320, height: 240, fps: 15, jpeg_quality: 80 }}
+safety:
+  align_threshold_deg: 3.0
+  max_step_deg: 1.5
+  follow_error_deg: 15.0
+  follow_error_hold_ms: 500
+  watchdog_ms: 200
+  joint_limits:
 {FULL_LIMITS}
-    """
-)
+"""
 
-HOME_YAML = textwrap.dedent(
-    """\
-    server_host: "127.0.0.1"
-    control_port: 5555
-    video_port: 5556
-    use_mock: true
-    client_watchdog_ms: 300
-    """
-)
+HOME_YAML = """server_host: "127.0.0.1"
+control_port: 5555
+video_port: 5556
+use_mock: true
+client_watchdog_ms: 300
+"""
+
+
+def limit_line(joint_name: str) -> str:
+    return f"{LIMIT_INDENT}{joint_name}: [-120.0, 120.0]"
 
 
 def _write(tmp_path, name, text):
@@ -581,14 +580,14 @@ def test_load_home_config(tmp_path):
 
 
 def test_missing_joint_limit_is_rejected(tmp_path):
-    broken = WORKBENCH_YAML.replace(f"      {JOINT_NAMES[3]}: [-120.0, 120.0]\n", "")
+    broken = WORKBENCH_YAML.replace(limit_line(JOINT_NAMES[3]) + "\n", "")
     with pytest.raises(ConfigError, match=JOINT_NAMES[3]):
         load_workbench_config(_write(tmp_path, "w.yaml", broken))
 
 
 def test_unknown_joint_limit_is_rejected(tmp_path):
     broken = WORKBENCH_YAML.replace(
-        f"      {JOINT_NAMES[0]}: [-120.0, 120.0]", "      not_a_joint: [-120.0, 120.0]"
+        limit_line(JOINT_NAMES[0]), f"{LIMIT_INDENT}not_a_joint: [-120.0, 120.0]"
     )
     with pytest.raises(ConfigError, match="not_a_joint"):
         load_workbench_config(_write(tmp_path, "w.yaml", broken))
@@ -596,7 +595,7 @@ def test_unknown_joint_limit_is_rejected(tmp_path):
 
 def test_inverted_joint_limit_is_rejected(tmp_path):
     broken = WORKBENCH_YAML.replace(
-        f"      {JOINT_NAMES[0]}: [-120.0, 120.0]", f"      {JOINT_NAMES[0]}: [50.0, 10.0]"
+        limit_line(JOINT_NAMES[0]), f"{LIMIT_INDENT}{JOINT_NAMES[0]}: [50.0, 10.0]"
     )
     with pytest.raises(ConfigError, match="min .* max"):
         load_workbench_config(_write(tmp_path, "w.yaml", broken))
