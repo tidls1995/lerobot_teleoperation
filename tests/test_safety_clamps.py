@@ -125,3 +125,40 @@ def test_targets_never_exceed_joint_limits_over_a_long_run():
         if r.state is not State.ENGAGED:
             break
         assert r.targets[0] <= 10.0 + 1e-6
+
+
+# --- 2단계: 그리퍼는 단위가 퍼센트라 속도 제한이 다르다 --------------------
+
+
+def test_gripper_uses_its_own_max_step():
+    import dataclasses
+
+    from common.joints import GRIPPER_INDICES
+
+    base = make_config(max_step_deg=1.5)
+    cfg = dataclasses.replace(
+        base,
+        gripper_max_step=4.0,
+        gripper_limits=(0.0, 100.0),
+        joint_limits={**base.joint_limits, "left_gripper": (0.0, 100.0), "right_gripper": (0.0, 100.0)},
+    )
+    gate = SafetyGate(cfg)
+    t = engage(gate)
+
+    target = [30.0] * N_JOINTS
+    result = gate.step(packet(joints=target, clutch=True, seq=3), ZEROS, now=t + 0.02)
+
+    for i in range(N_JOINTS):
+        expected = 4.0 if i in GRIPPER_INDICES else 1.5
+        assert result.targets[i] == pytest.approx(expected), f"joint {i}"
+
+
+def test_body_joints_are_unaffected_by_gripper_max_step():
+    """그리퍼 값을 크게 잡아도 몸통 관절은 도 단위 제한을 지켜야 한다."""
+    import dataclasses
+
+    cfg = dataclasses.replace(make_config(max_step_deg=1.5), gripper_max_step=50.0)
+    gate = SafetyGate(cfg)
+    t = engage(gate)
+    result = gate.step(packet(joints=[30.0] * N_JOINTS, clutch=True, seq=3), ZEROS, now=t + 0.02)
+    assert result.targets[0] == pytest.approx(1.5)

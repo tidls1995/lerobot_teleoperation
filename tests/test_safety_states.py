@@ -8,13 +8,27 @@ ZEROS = [0.0] * N_JOINTS
 
 
 def make_config(**overrides) -> SafetyConfig:
+    """테스트용 안전 설정.
+
+    그리퍼는 실제로 퍼센트(0~100) 단위이므로 한계도 그렇게 잡는다 (스펙 §4.3).
+    다만 ``gripper_max_step`` 은 기본적으로 ``max_step_deg`` 와 같게 둔다. 대부분의
+    테스트는 클램프 **기구**를 검증하는 것이고 관절마다 값이 다르면 기대값이
+    관절별로 갈라져 읽기 어려워지기 때문이다. 단위가 다르다는 사실 자체는
+    test_safety_clamps.py 의 그리퍼 전용 테스트가 명시적으로 값을 넣어 검증한다.
+    """
+    max_step = overrides.get("max_step_deg", 1.5)
     base = dict(
         align_threshold_deg=3.0,
-        max_step_deg=1.5,
+        max_step_deg=max_step,
+        gripper_max_step=max_step,
+        gripper_limits=(0.0, 100.0),
         follow_error_deg=15.0,
         follow_error_hold_ms=500,
         watchdog_ms=200,
-        joint_limits={name: (-120.0, 120.0) for name in JOINT_NAMES},
+        joint_limits={
+            name: (0.0, 100.0) if name.endswith("gripper") else (-120.0, 120.0)
+            for name in JOINT_NAMES
+        },
     )
     base.update(overrides)
     return SafetyConfig(**base)

@@ -158,9 +158,10 @@ class SafetyGate:
             if limited != desired:
                 flags |= Flag.JOINT_LIMITED
 
-            # 2. 속도 제한
+            # 2. 속도 제한 (그리퍼는 단위가 퍼센트라 별도 값을 쓴다, 스펙 §5.4)
+            max_step = cfg.max_step_for(i)
             delta = limited - self._applied[i]
-            step = min(max(delta, -cfg.max_step_deg), cfg.max_step_deg)
+            step = min(max(delta, -max_step), max_step)
             if step != delta:
                 flags |= Flag.SPEED_CLAMPED
 
