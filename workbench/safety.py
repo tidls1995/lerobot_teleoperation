@@ -42,6 +42,9 @@ class SafetyGate:
         self._prev_clutch = False
         self._reason: str | None = None
         self._follow_error_since: float | None = None
+        #: 호밍 중 "지금 사람이 키를 누르고 있다"를 나타낸다. 놓으면 꺼지고,
+        #: 다시 눌러야(상승 에지) 이어서 움직인다.
+        self._homing_armed = False
 
     @property
     def state(self) -> State:
@@ -69,13 +72,16 @@ class SafetyGate:
         # 유일한 탈출구는 명시적 RESET 명령이다.
         if self._state is State.HOLD:
             if packet is not None and packet.cmd is Cmd.RESET:
-                self._enter_aligning(actual)
+                if self._cfg.home_pose is None:
+                    self._enter_aligning(actual)
+                else:
+                    self._enter_homing(actual)
             else:
                 flags |= Flag.WATCHDOG if self._reason == "watchdog timeout" else 0
                 return self._result(flags)
 
         # --- 워치독: 제어 패킷이 끊기면 즉시 HOLD --------------------------
-        if self._state in (State.ALIGNING, State.ENGAGED):
+        if self._state in (State.ALIGNING, State.ENGAGED, State.HOMING):
             if self._last_packet_t is None:
                 return self._to_hold("watchdog timeout", Flag.WATCHDOG)
             gap_ms = (now - self._last_packet_t) * 1000.0
@@ -101,6 +107,29 @@ class SafetyGate:
 
         clutch_rising = packet.clutch and not self._prev_clutch
         self._prev_clutch = packet.clutch
+
+        # --- HOMING: home 자세로 천천히 되돌린다 ---------------------------
+        # 리더를 따라가지 않는다. HOLD 가 걸린 자세가 리더로 도달 불가능할 때
+        # 정렬을 다시 시작할 수 있게 하는 것이 목적이다 (스펙 §5.2).
+        if self._state is State.HOMING:
+            if clutch_rising:
+                self._homing_armed = True
+            if not packet.clutch:
+                # 놓으면 그 자리에 정지하고, 다시 눌러야 이어서 간다.
+                self._homing_armed = False
+                return self._result(flags)
+            if not self._homing_armed:
+                return self._result(flags)
+
+            flags |= self._watch_follow_error(actual, now)
+            if self._state is State.HOLD:
+                return self._result(flags)
+            flags |= self._move_toward(self._cfg.home_pose_list(), self._cfg.homing_max_step)
+            if self._at_home():
+                # 실제각이 아니라 명령각을 유지한다. 실제각은 뒤따라오는 중이다.
+                assert self._applied is not None
+                self._enter_aligning(self._applied)
+            return self._result(flags)
 
         # --- ALIGNING: 리더를 팔로워 자세에 맞출 때까지 기다린다 -----------
         if self._state is State.ALIGNING:
@@ -131,35 +160,58 @@ class SafetyGate:
         순서가 중요하다. 먼저 관절 한계로 목표를 자르고, 그 목표를 향해
         속도 제한만큼만 나아간다. 반대로 하면 한계 밖으로 넘어갈 수 있다.
         """
+        flags = self._watch_follow_error(actual, now)
+        if self._state is State.HOLD:
+            return flags
+        return flags | self._move_toward(list(packet.joints), None)
+
+    def _watch_follow_error(self, actual: list[float], now: float) -> int:
+        """팔이 뭔가에 걸려 있지 않은지 감시한다. 값은 바꾸지 않는다.
+
+        지난 프레임에 '쓴' 각도와 지금 실제각을 비교하므로, 목표를 갱신하기 전에
+        불러야 의미가 있다. 오차가 크게 **유지될** 때만 걸림으로 본다 - 빠르게
+        움직일 때는 관성 때문에 정상적으로도 명령각이 실제각을 앞선다.
+
+        ENGAGED 와 HOMING 이 함께 쓴다. 호밍 중에 걸렸을 때도 계속 밀어붙이면
+        기어가 갈린다.
+        """
+        assert self._applied is not None
+        cfg = self._cfg
+        max_error = max(abs(self._applied[i] - actual[i]) for i in range(N_JOINTS))
+        if max_error <= cfg.follow_error_deg:
+            self._follow_error_since = None
+            return 0
+
+        if self._follow_error_since is None:
+            self._follow_error_since = now
+        elif (now - self._follow_error_since) >= cfg.follow_error_hold_ms / 1000.0:
+            self._to_hold("follow error - arm may be blocked", Flag.FOLLOW_ERROR)
+        return int(Flag.FOLLOW_ERROR)
+
+    def _move_toward(self, goal: list[float], step_limit: float | None) -> int:
+        """목표를 향해 관절 한계와 속도 제한 안에서 한 프레임만큼 나아간다.
+
+        순서가 중요하다. 먼저 관절 한계로 목표를 자르고, 그 목표를 향해 속도
+        제한만큼만 간다. 반대로 하면 한계 밖으로 넘어갈 수 있다.
+
+        Args:
+            goal: 12칸 목표. 조종에서는 리더 각도, 호밍에서는 home 자세.
+            step_limit: 프레임당 최대 이동량. None 이면 관절별 값을 쓴다
+                (그리퍼는 퍼센트 단위라 다르다, 스펙 §5.4).
+        """
         assert self._applied is not None
         cfg = self._cfg
         flags = 0
-
-        # 3. 추종 오차 - 지난 프레임에 '쓴' 각도와 지금 실제각을 비교한다.
-        #    목표를 갱신하기 전에 판정해야 의미가 있다.
-        max_error = max(abs(self._applied[i] - actual[i]) for i in range(N_JOINTS))
-        if max_error > cfg.follow_error_deg:
-            flags |= Flag.FOLLOW_ERROR
-            if self._follow_error_since is None:
-                self._follow_error_since = now
-            elif (now - self._follow_error_since) >= cfg.follow_error_hold_ms / 1000.0:
-                self._to_hold("follow error - arm may be blocked", Flag.FOLLOW_ERROR)
-                return flags
-        else:
-            self._follow_error_since = None
-
         targets: list[float] = []
         for i, name in enumerate(JOINT_NAMES):
             lo, hi = cfg.joint_limits[name]
 
-            # 1. 관절 한계
-            desired = packet.joints[i]
+            desired = goal[i]
             limited = min(max(desired, lo), hi)
             if limited != desired:
                 flags |= Flag.JOINT_LIMITED
 
-            # 2. 속도 제한 (그리퍼는 단위가 퍼센트라 별도 값을 쓴다, 스펙 §5.4)
-            max_step = cfg.max_step_for(i)
+            max_step = cfg.max_step_for(i) if step_limit is None else step_limit
             delta = limited - self._applied[i]
             step = min(max(delta, -max_step), max_step)
             if step != delta:
@@ -170,15 +222,38 @@ class SafetyGate:
         self._applied = targets
         return flags
 
+    def _at_home(self) -> bool:
+        """호밍 목표에 도달했는가. 명령각을 기준으로 본다 - 실제각은 뒤따라온다."""
+        home = self._cfg.home_pose_list()
+        assert home is not None and self._applied is not None
+        tol = self._cfg.homing_tolerance
+        return all(abs(self._applied[i] - home[i]) <= tol for i in range(N_JOINTS))
+
+    def _enter_homing(self, actual: list[float]) -> None:
+        self._state = State.HOMING
+        self._applied = list(actual)
+        self._reason = None
+        self._follow_error_since = None
+        # 리셋 직후 클러치가 눌린 채라면 저절로 움직이지 않게, 상승 에지를 요구한다.
+        self._prev_clutch = True
+        self._homing_armed = False
+
     def _is_aligned(self, leader: tuple[float, ...], actual: list[float]) -> bool:
         threshold = self._cfg.align_threshold_deg
         return all(abs(leader[i] - actual[i]) < threshold for i in range(N_JOINTS))
 
-    def _enter_aligning(self, actual: list[float]) -> None:
+    def _enter_aligning(self, hold_pose: list[float]) -> None:
+        """ALIGNING 으로 들어가며 붙들 자세를 정한다.
+
+        HOLD/DISCONNECTED 에서 올 때는 **실제각**을 준다 (지금 있는 자리를 지킨다).
+        HOMING 에서 올 때는 **명령각**을 준다 - 실제각은 아직 따라오는 중이므로
+        그걸로 덮으면 방금 호밍한 것을 일부 되돌린다.
+        """
         self._state = State.ALIGNING
-        self._applied = list(actual)
+        self._applied = list(hold_pose)
         self._reason = None
         self._follow_error_since = None
+        self._homing_armed = False
         # 리셋 직후 클러치가 눌린 채라면 상승 에지를 요구하기 위해 눌림으로 간주한다.
         self._prev_clutch = True
 
@@ -188,7 +263,7 @@ class SafetyGate:
         return self._result(int(flag))
 
     def _result(self, flags: int) -> SafetyResult:
-        torque = self._state in (State.ALIGNING, State.ENGAGED, State.HOLD)
+        torque = self._state in (State.ALIGNING, State.ENGAGED, State.HOLD, State.HOMING)
         targets = list(self._applied) if (torque and self._applied is not None) else None
         return SafetyResult(
             state=self._state, torque=torque, targets=targets, flags=flags, reason=self._reason

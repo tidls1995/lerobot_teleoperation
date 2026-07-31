@@ -83,9 +83,13 @@ def test_video_header_rejects_wrong_magic():
 
 
 def test_magics_are_distinct_four_bytes():
-    assert PROTOCOL_MAGIC == b"RT01"
+    # RT02: State.HOMING(5) 이 추가되면서 올렸다. 구버전 클라이언트는 state=5 를
+    # 해석할 수 없어 텔레메트리를 조용히 버리는데, 그러면 조종자 화면에는
+    # '연결 끊김'처럼 보인다. 버전을 올려 큰 소리로 거부하게 만든다 (스펙 §4.6).
+    assert PROTOCOL_MAGIC == b"RT02"
     assert VIDEO_MAGIC == b"RTV1"
     assert len(PROTOCOL_MAGIC) == len(VIDEO_MAGIC) == 4
+    assert PROTOCOL_MAGIC != VIDEO_MAGIC
 
 
 def test_control_packet_rejects_wrong_joint_count():

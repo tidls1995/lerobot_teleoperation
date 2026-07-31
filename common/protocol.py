@@ -13,7 +13,11 @@ import struct
 from dataclasses import dataclass
 from enum import IntEnum, IntFlag
 
-PROTOCOL_MAGIC = b"RT01"
+#: RT02 에서 State.HOMING(5) 이 추가되었다. 와이어 레이아웃은 그대로지만, 구버전
+#: 클라이언트는 state=5 를 해석할 수 없어 텔레메트리를 조용히 버린다. 그러면 조종자
+#: 화면에는 '연결 끊김'처럼 보여 원인을 찾기 어렵다. 버전을 올려 큰 소리로 거부하게
+#: 만드는 것이 magic 필드의 존재 이유다 (스펙 §4.6).
+PROTOCOL_MAGIC = b"RT02"
 VIDEO_MAGIC = b"RTV1"
 
 N_JOINTS = 12
@@ -54,6 +58,10 @@ class State(IntEnum):
     ENGAGED = 2
     HOLD = 3
     FAULT = 4
+    #: HOLD 에서 리셋했을 때, 팔로워를 설정된 home 자세로 천천히 되돌리는 중.
+    #: HOLD 가 걸린 자세가 리더로 도달 불가능하면 정렬 절차를 통과할 방법이 없기
+    #: 때문에 필요하다 - 원격에서는 손으로 팔로워를 돌릴 수 없다 (스펙 §5.2).
+    HOMING = 5
 
 
 class Flag(IntFlag):

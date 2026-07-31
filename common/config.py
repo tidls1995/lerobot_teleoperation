@@ -57,9 +57,26 @@ class SafetyConfig:
     gripper_max_step: float = 4.0
     gripper_limits: tuple[float, float] = (0.0, 100.0)
 
+    #: HOLD 에서 리셋했을 때 팔로워를 되돌릴 자세. 관절 이름 → 값.
+    #: None 이면 호밍 없이 그 자리에서 ALIGNING 으로 간다 (구버전 동작).
+    #: **리더가 편하게 잡을 수 있는 자세를 리더에서 읽어 적는다** - 팔로워에서
+    #: 읽으면 리더가 도달 못 하는 자세를 목표로 삼게 된다.
+    home_pose: dict[str, float] | None = None
+    #: 호밍 중 프레임당 최대 이동량. 조종(90도/초)보다 느리게 잡는다. 먼 거리를
+    #: 움직이고 조종자가 팔을 안 보고 있을 수도 있기 때문이다.
+    homing_max_step: float = 0.5  # 60Hz 기준 30도/초
+    #: 이만큼 안으로 들어오면 호밍 완료로 보고 ALIGNING 으로 넘어간다.
+    homing_tolerance: float = 1.0
+
     def max_step_for(self, index: int) -> float:
         """이 관절의 프레임당 최대 이동량. 그리퍼만 다른 값을 쓴다."""
         return self.gripper_max_step if index in GRIPPER_INDICES else self.max_step_deg
+
+    def home_pose_list(self) -> list[float] | None:
+        """home_pose 를 관절 순서대로 12칸 배열로. 설정이 없으면 None."""
+        if self.home_pose is None:
+            return None
+        return [self.home_pose[name] for name in JOINT_NAMES]
 
 
 @dataclass(frozen=True)
@@ -142,16 +159,50 @@ def _parse_safety(raw: Any) -> SafetyConfig:
     gripper_limits = raw.get("gripper_limits", [0.0, 100.0])
     if not (isinstance(gripper_limits, (list, tuple)) and len(gripper_limits) == 2):
         raise ConfigError(f"safety.gripper_limits must be [min, max], got {gripper_limits!r}")
+    limits = _parse_joint_limits(_require(raw, "joint_limits", "safety"))
+    home_pose = _parse_home_pose(raw["home_pose"], limits) if "home_pose" in raw else None
     return SafetyConfig(
         align_threshold_deg=float(_require(raw, "align_threshold_deg", "safety")),
         max_step_deg=float(_require(raw, "max_step_deg", "safety")),
         follow_error_deg=float(_require(raw, "follow_error_deg", "safety")),
         follow_error_hold_ms=int(_require(raw, "follow_error_hold_ms", "safety")),
         watchdog_ms=int(_require(raw, "watchdog_ms", "safety")),
-        joint_limits=_parse_joint_limits(_require(raw, "joint_limits", "safety")),
+        joint_limits=limits,
         gripper_max_step=float(raw.get("gripper_max_step", 4.0)),
         gripper_limits=(float(gripper_limits[0]), float(gripper_limits[1])),
+        home_pose=home_pose,
+        homing_max_step=float(raw.get("homing_max_step", 0.5)),
+        homing_tolerance=float(raw.get("homing_tolerance", 1.0)),
     )
+
+
+def _parse_home_pose(raw: Any, limits: dict[str, tuple[float, float]]) -> dict[str, float]:
+    """호밍 목표 자세. 관절 12개가 모두 있어야 하고 관절 한계 안이어야 한다.
+
+    한계 밖의 목표를 허용하면 클램프에 걸려 영원히 도착하지 못하고, 호밍이
+    끝나지 않는다.
+    """
+    if not isinstance(raw, dict):
+        raise ConfigError("safety.home_pose must be a mapping of joint name to value")
+
+    unknown = set(raw) - set(JOINT_NAMES)
+    if unknown:
+        raise ConfigError(f"unknown joint name(s) in home_pose: {sorted(unknown)}")
+    missing = set(JOINT_NAMES) - set(raw)
+    if missing:
+        raise ConfigError(f"home_pose is missing entries for: {sorted(missing)}")
+
+    pose: dict[str, float] = {}
+    for name in JOINT_NAMES:
+        value = float(raw[name])
+        lo, hi = limits[name]
+        if not (lo <= value <= hi):
+            raise ConfigError(
+                f"home_pose[{name}] = {value} is outside joint_limits [{lo}, {hi}]; "
+                "the arm would never reach it and homing would never finish"
+            )
+        pose[name] = value
+    return pose
 
 
 def _parse_arms(raw: Any) -> dict[str, ArmConfig]:

@@ -30,6 +30,7 @@ _GREEN = (60, 200, 110)
 _AMBER = (230, 170, 60)
 _RED = (225, 70, 70)
 _GREY = (110, 110, 120)
+_BLUE = (90, 160, 235)
 
 _STATE_COLOR = {
     State.DISCONNECTED: _GREY,
@@ -37,6 +38,17 @@ _STATE_COLOR = {
     State.ENGAGED: _GREEN,
     State.HOLD: _RED,
     State.FAULT: _RED,
+    State.HOMING: _BLUE,
+}
+
+#: 각 상태에서 조종자가 무엇을 해야 하는지. 상태 이름만으로는 알 수 없다.
+_STATE_HINT = {
+    State.DISCONNECTED: "waiting for the server",
+    State.ALIGNING: "match the leader to the follower, then press the clutch",
+    State.ENGAGED: "following - release the clutch to stop",
+    State.HOLD: "check what happened, then hold R for 3s",
+    State.FAULT: "server fault - check the arms and restart",
+    State.HOMING: "hold the clutch to walk the follower home",
 }
 
 _FLAG_LABELS = [
@@ -239,6 +251,10 @@ class Hud:
     def _draw_status(self, state, telemetry, stats: HudStats, stale: bool, now: float) -> None:
         y = 470
         self._screen.blit(self._big.render(state.name, True, _STATE_COLOR[state]), (16, y))
+        # 힌트는 통계 컬럼(x=240) 아래로 내려 겹치지 않게 둔다.
+        hint = _STATE_HINT.get(state, "")
+        if hint:
+            self._screen.blit(self._small.render(hint, True, _FG), (16, self._height - 74))
 
         rtt = f"{stats.rtt_ms:5.1f} ms" if stats.rtt_ms is not None else "  --  "
         lines = [
