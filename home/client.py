@@ -304,6 +304,17 @@ def main(argv: list[str] | None = None) -> int:
         default=3,
         help="how many camera panes to show (0 for the no-camera bring-up)",
     )
+    parser.add_argument(
+        "--clutch",
+        choices=["hold", "toggle"],
+        default="hold",
+        help=(
+            "hold (default): the follower only follows while SPACE is held, so letting go "
+            "stops it instantly. toggle: SPACE latches it on. Use toggle only when testing "
+            "alone - both hands are needed for the two leader arms, so there is no hand left "
+            "for SPACE. It gives up the let-go-and-it-stops safety property."
+        ),
+    )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
 
@@ -324,7 +335,16 @@ def main(argv: list[str] | None = None) -> int:
     link = ControlLink(host=cfg.server_host, port=cfg.control_port)
     video = VideoClient(host=cfg.server_host, port=cfg.video_port)
     cam_ids = list(range(args.cameras))
-    hud = Hud(cam_ids=cam_ids, cam_names={0: "front", 1: "wrist_left", 2: "wrist_right"})
+    hud = Hud(
+        cam_ids=cam_ids,
+        cam_names={0: "front", 1: "wrist_left", 2: "wrist_right"},
+        clutch_mode=args.clutch,
+    )
+    if args.clutch == "toggle":
+        log.warning(
+            "clutch mode is TOGGLE - the follower keeps following after you let go of SPACE. "
+            "Press SPACE again to release, or ESC to quit (which stops the arm via the watchdog)."
+        )
 
     commands = CommandState()
     sender = LeaderSender(link=link, leader=leader, commands=commands)

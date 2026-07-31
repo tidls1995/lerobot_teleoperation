@@ -67,9 +67,24 @@ class HudStats:
 
 
 class ClutchTracker:
-    """키 상태를 클러치·리셋·종료 신호로 바꾼다. pygame 창 없이 테스트 가능하다."""
+    """키 상태를 클러치·리셋·종료 신호로 바꾼다. pygame 창 없이 테스트 가능하다.
 
-    def __init__(self, reset_hold_s: float = 3.0) -> None:
+    Args:
+        mode: ``"hold"`` (기본) 은 스페이스를 누르고 있는 동안만 engage 한다.
+            ``"toggle"`` 은 한 번 누르면 걸리고 다시 누르면 풀린다.
+
+    **토글은 기본값이 아니다.** hold 모드의 "놓으면 즉시 멈춘다"는 성질을 잃기
+    때문이다. 집에서 리더를 놓으면 리더는 토크가 꺼져 있어 중력에 쓰러지는데,
+    토글 상태라면 팔로워도 따라 쓰러진다 (스펙 §5.3).
+
+    토글은 **혼자 시험할 때** 쓰기 위한 것이다. 양팔을 다 잡으면 스페이스를 누를
+    손이 없다. 실제 작업에서는 풋페달을 쓰는 것이 맞다.
+    """
+
+    def __init__(self, reset_hold_s: float = 3.0, mode: str = "hold") -> None:
+        if mode not in ("hold", "toggle"):
+            raise ValueError(f"mode must be 'hold' or 'toggle', got {mode!r}")
+        self.mode = mode
         self._reset_hold_s = reset_hold_s
         self._space_down = False
         self._r_down_at: float | None = None
@@ -83,7 +98,9 @@ class ClutchTracker:
 
     def on_key_down(self, key: int, now: float) -> None:
         if key == pygame.K_SPACE:
-            self._space_down = True
+            # 토글 모드에서는 누를 때마다 뒤집는다. hold 모드에서는 키 반복이
+            # 들어와도 켜진 상태를 유지해야 하므로 그냥 True 로 둔다.
+            self._space_down = (not self._space_down) if self.mode == "toggle" else True
         elif key == pygame.K_r:
             if self._r_down_at is None:
                 self._r_down_at = now
@@ -95,7 +112,9 @@ class ClutchTracker:
 
     def on_key_up(self, key: int, now: float) -> None:
         if key == pygame.K_SPACE:
-            self._space_down = False
+            # 토글 모드에서는 손을 떼도 걸린 상태가 유지된다.
+            if self.mode == "hold":
+                self._space_down = False
         elif key == pygame.K_r:
             self._r_down_at = None
             self._reset_fired = False
@@ -125,6 +144,7 @@ class Hud:
         cam_names: dict[int, str],
         width: int = 1000,
         height: int = 620,
+        clutch_mode: str = "hold",
     ) -> None:
         pygame.init()
         pygame.display.set_caption("SO-101 Remote Teleoperation")
@@ -136,7 +156,7 @@ class Hud:
         self._cam_names = cam_names
         self._width = width
         self._height = height
-        self._tracker = ClutchTracker()
+        self._tracker = ClutchTracker(mode=clutch_mode)
 
     def poll(self, now: float) -> HudInput:
         for event in pygame.event.get():
@@ -248,7 +268,21 @@ class Hud:
             pygame.draw.rect(self._screen, _AMBER, (16, y + 40, int(300 * progress), 12))
             self._screen.blit(self._small.render("hold R to reset...", True, _AMBER), (322, y + 40))
 
-        help_text = "SPACE hold=clutch   R hold 3s=reset   M=mock motion   ESC=quit"
+        if self._tracker.mode == "toggle":
+            # 토글은 "놓으면 즉시 멈춘다"는 성질이 없다. 그 상태임을 잊으면 위험하므로
+            # 항상 눈에 띄게 표시한다.
+            badge = "CLUTCH: TOGGLE - does NOT stop when you let go"
+            text = self._font.render(badge, True, _AMBER)
+            box = text.get_rect().inflate(12, 6)
+            box.topleft = (16, self._height - 52)
+            pygame.draw.rect(self._screen, (60, 45, 15), box)
+            pygame.draw.rect(self._screen, _AMBER, box, width=1)
+            self._screen.blit(text, (22, self._height - 49))
+            clutch_help = "SPACE=toggle clutch"
+        else:
+            clutch_help = "SPACE hold=clutch"
+
+        help_text = f"{clutch_help}   R hold 3s=reset   M=mock motion   ESC=quit"
         self._screen.blit(self._small.render(help_text, True, _DIM), (16, self._height - 22))
 
     def close(self) -> None:
