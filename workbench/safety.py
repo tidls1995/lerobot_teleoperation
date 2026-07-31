@@ -9,10 +9,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from common.config import SafetyConfig
 from common.protocol import JOINT_NAMES, N_JOINTS, Cmd, ControlPacket, Flag, State
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -73,7 +76,17 @@ class SafetyGate:
 
         # --- 워치독: 제어 패킷이 끊기면 즉시 HOLD --------------------------
         if self._state in (State.ALIGNING, State.ENGAGED):
-            if self._last_packet_t is None or (now - self._last_packet_t) > self._cfg.watchdog_ms / 1000.0:
+            if self._last_packet_t is None:
+                return self._to_hold("watchdog timeout", Flag.WATCHDOG)
+            gap_ms = (now - self._last_packet_t) * 1000.0
+            if gap_ms > self._cfg.watchdog_ms:
+                # 실제로 몇 ms 가 비었는지 남긴다. 회선이 나쁜 것인지,
+                # 클라이언트가 멈춘 것인지 나중에 구분하려면 이 숫자가 필요하다.
+                log.warning(
+                    "watchdog fired: no control packet for %.0f ms (limit %d ms)",
+                    gap_ms,
+                    self._cfg.watchdog_ms,
+                )
                 return self._to_hold("watchdog timeout", Flag.WATCHDOG)
 
         # --- DISCONNECTED: 첫 유효 패킷을 기다린다 -------------------------

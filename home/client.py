@@ -30,6 +30,10 @@ _RECV_TIMEOUT = 0.05
 #: RTT 계산용 송신 시각 보관 개수. 60Hz 에서 약 4초분.
 _SENT_HISTORY = 256
 
+#: 송신 스레드가 이보다 오래 멈추면 경고를 남긴다. 서버 워치독(200ms)보다
+#: 낮게 잡아, 실제로 HOLD 가 걸리기 전에 조짐이 로그에 남게 한다.
+_STALL_WARN_MS = 100.0
+
 
 class ControlLink:
     """UDP 제어 채널. HUD 없이도 동작하므로 통합 테스트에서 그대로 쓸 수 있다."""
@@ -211,8 +215,25 @@ class LeaderSender:
 
     def _loop(self) -> None:
         next_t = self._clock()
+        last_sent_at: float | None = None
         while not self._stop.is_set():
             clutch, reset = self._commands.take()
+            now = self._clock()
+
+            # 경계 계측: 이 스레드가 실제로 얼마 만에 다시 돌았는가.
+            # 서버의 워치독 로그와 짝을 이룬다. 여기에 큰 값이 찍히면 클라이언트가
+            # 멈춘 것이고, 여기는 멀쩡한데 서버가 못 받았다면 회선 쪽 문제다.
+            if last_sent_at is not None:
+                gap_ms = (now - last_sent_at) * 1000.0
+                if gap_ms > _STALL_WARN_MS:
+                    log.warning(
+                        "control send stalled for %.0f ms (target %.1f ms) - "
+                        "the sender thread was blocked, not the network",
+                        gap_ms,
+                        self._interval * 1000.0,
+                    )
+            last_sent_at = now
+
             try:
                 self._link.send(joints=self._leader.read_positions(), clutch=clutch, reset=reset)
             except Exception:
