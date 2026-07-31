@@ -113,12 +113,17 @@ def test_missing_required_key_is_rejected(tmp_path):
 
 
 def test_shipped_config_files_load():
-    """리포지토리에 들어 있는 실제 설정 파일이 유효해야 한다."""
+    """리포지토리에 들어 있는 실제 설정 파일이 유효해야 한다.
+
+    카메라 대수는 고정하지 않는다. 2단계-A 는 0대, 2단계-B 는 3대이고 이는
+    배치 선택이지 설정의 유효성 조건이 아니다.
+    """
     w = load_workbench_config("config/workbench.yaml")
     h = load_home_config("config/home.yaml")
-    assert len(w.cameras) == 3
     assert w.control_port == h.control_port
     assert w.video_port == h.video_port
+    # 카메라를 지정했다면 id 가 서로 달라야 한다 (_parse_cameras 가 보장)
+    assert len({c.id for c in w.cameras}) == len(w.cameras)
 
 
 # --- 2단계: arms 섹션과 그리퍼 전용 안전값 --------------------------------

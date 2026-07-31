@@ -3,10 +3,13 @@ use_mock: true          # 1단계: mock 장치 사용. 2단계에서 false 로.
 control_port: 5555      # UDP - 제어 + 텔레메트리
 video_port: 5556        # TCP - 영상 3채널 다중화
 
-cameras:
-  - { id: 0, name: front,       index: 0, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
-  - { id: 1, name: wrist_left,  index: 1, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
-  - { id: 2, name: wrist_right, index: 2, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
+# 2단계-A: USB 포트 4개가 팔 4대로 차서 카메라를 꽂을 수 없다.
+# 첫 실물 조종은 팔을 눈으로 직접 보면서 한다. 2단계-B 에서 아래를 되살린다.
+cameras: []
+# cameras:
+#   - { id: 0, name: front,       index: 0, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
+#   - { id: 1, name: wrist_left,  index: 1, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
+#   - { id: 2, name: wrist_right, index: 2, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
 
 safety:
   align_threshold_deg: 3.0      # ENGAGED 진입에 필요한 최대 정렬 오차
@@ -30,8 +33,9 @@ safety:
     right_wrist_roll:    [-120.0, 120.0]
     right_gripper:       [0.0, 100.0]        # 퍼센트 단위 (도가 아님)
 
-# 팔로워 암 2대. Task 8 에서 실측한 시리얼 번호로 바꾼다.
+# 팔로워 암 2대. 2026-07-31 실측.
+# COM 번호는 재부팅하면 바뀔 수 있으므로 시리얼 번호로 지정한다.
 # 확인 방법: python -m tools.probe_hardware --ports
 arms:
-  left:  { serial_number: "CHANGEME_FOLLOWER_LEFT",  calibration_id: "follower_left" }
-  right: { serial_number: "CHANGEME_FOLLOWER_RIGHT", calibration_id: "follower_right" }
+  left:  { serial_number: "5B14033734", calibration_id: "follower_left" }   # COM5 (실측 시점)
+  right: { serial_number: "5B14031059", calibration_id: "follower_right" }  # COM4 (실측 시점)
