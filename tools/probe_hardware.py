@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import pathlib
 import time
 
 from common.joints import GRIPPER_INDICES
@@ -182,6 +183,56 @@ def check_sides(config_path: str, kind: str, seconds: float) -> int:
     return 0
 
 
+def snapshot_cameras(max_index: int, out_dir: str) -> int:
+    """각 카메라 인덱스에서 한 장씩 찍어 파일로 저장한다.
+
+    ``--cameras`` 는 인덱스와 해상도만 알려주지 그 카메라가 어디 달린 것인지는
+    모른다. 렌즈를 하나씩 손으로 가려 보는 것보다 사진을 놓고 비교하는 편이 확실하다.
+    노트북 내장 웹캠이 섞여 있는 경우도 여기서 바로 드러난다.
+    """
+    import cv2
+
+    from workbench.usb_camera import CameraOpenError, UsbCamera
+
+    out = pathlib.Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    saved = []
+    for index in range(max_index):
+        # 해상도를 요청하지 않는다. 장치가 주는 그대로 찍어야 무엇인지 알아보기 쉽다.
+        cam = UsbCamera(cam_id=index, name=f"index{index}", index=index, width=0, height=0, fps=15)
+        try:
+            cam.open()
+        except CameraOpenError:
+            continue
+        try:
+            # 첫 프레임은 노출이 안 맞아 어둡게 나오는 카메라가 많다. 몇 장 버린다.
+            frame = None
+            for _ in range(5):
+                frame = cam.read()
+            if frame is None:
+                print(f"index {index}: opened but no frame")
+                continue
+            path = out / f"cam{index}.png"
+            cv2.imwrite(str(path), frame)
+            size = cam.actual_size or (0, 0)
+            print(f"index {index}: {size[0]}x{size[1]}  ->  {path}")
+            saved.append(index)
+        finally:
+            cam.close()
+
+    if not saved:
+        print(f"no cameras found on indices 0..{max_index - 1}")
+        return 1
+    print()
+    print(f"open the files in {out.resolve()} and note which is which:")
+    print("  front        - the whole workbench")
+    print("  wrist_left   - on the left follower's wrist")
+    print("  wrist_right  - on the right follower's wrist")
+    print("A laptop's built-in webcam usually shows the room or your face.")
+    return 0
+
+
 def probe_cameras(max_index: int) -> int:
     """어느 인덱스에 카메라가 있는지, 실제 해상도와 프레임레이트가 얼마인지."""
     from workbench.usb_camera import CameraOpenError, UsbCamera
@@ -221,6 +272,11 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--arms", action="store_true", help="open arms and read joint angles")
     group.add_argument("--cameras", action="store_true", help="scan camera indices")
     group.add_argument(
+        "--snapshot",
+        action="store_true",
+        help="save one photo per camera index so you can tell which is which",
+    )
+    group.add_argument(
         "--check-sides", action="store_true", help="verify left/right are not swapped in the config"
     )
     group.add_argument(
@@ -231,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
         "--kind", choices=["follower", "leader"], default="follower", help="which arms to open"
     )
     parser.add_argument("--max-index", type=int, default=8, help="how many camera indices to scan")
+    parser.add_argument("--out", default="cam_snapshots", help="where --snapshot writes photos")
     parser.add_argument("--seconds", type=float, default=4.0, help="how long each --check-sides step waits")
     parser.add_argument("--log-level", default="WARNING")
     args = parser.parse_args(argv)
@@ -245,6 +302,8 @@ def main(argv: list[str] | None = None) -> int:
         return check_sides(args.config, args.kind, args.seconds)
     if args.scan_motors:
         return scan_motors()
+    if args.snapshot:
+        return snapshot_cameras(args.max_index, args.out)
     return probe_cameras(args.max_index)
 
 
