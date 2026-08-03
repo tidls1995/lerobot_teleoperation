@@ -284,7 +284,42 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="report serial port enumeration at each startup step, then exit",
     )
+    parser.add_argument(
+        "--diagnose-cold",
+        action="store_true",
+        help="call comports() exactly once, after --cold-step, then exit",
+    )
+    parser.add_argument(
+        "--cold-step",
+        choices=["none", "lerobot", "cv2", "both", "build"],
+        default="build",
+        help="what to do before the single comports() call",
+    )
     args = parser.parse_args(argv)
+
+    if args.diagnose_cold:
+        # --diagnose 는 A 단계에서 comports() 를 먼저 부른다. 그 뒤로는 전부
+        # 성공한다. 일반 실행만 build_server() **뒤에** 처음 부르고 실패한다.
+        # 여기서는 미리 부르지 않고, 무엇을 하기 전과 후에 딱 한 번씩만 재서
+        # 어느 import 가 첫 호출을 깨뜨리는지 가른다.
+        print("calling comports() exactly once, after the named step\n")
+        step = args.cold_step
+        if step in ("lerobot", "both"):
+            import lerobot.robots.so_follower  # noqa: F401
+
+            print("  imported lerobot.robots.so_follower")
+        if step in ("cv2", "both"):
+            import cv2  # noqa: F401
+
+            print("  imported cv2")
+        if step == "build":
+            cfg = load_workbench_config(args.config)
+            build_server(cfg)
+            print("  ran build_server()")
+        if step == "none":
+            print("  did nothing")
+        _diagnose_enumeration(f"first comports() after '{step}'")
+        return 0
 
     if args.diagnose:
         print("enumerating serial ports at each step of the real server startup\n")
