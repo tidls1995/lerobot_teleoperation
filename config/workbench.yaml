@@ -19,49 +19,50 @@ safety:
   follow_error_deg: 15.0        # 이 이상 벌어지면 걸림 의심
   follow_error_hold_ms: 500     # 그 상태가 이만큼 지속되면 HOLD
   watchdog_ms: 200              # 제어 패킷 무수신 허용 시간
-  # 2026-07-31 실측. 캘리브레이션 파일의 range_min/range_max 를 도로 변환한 뒤
-  # (도 = (raw - (min+max)/2) * 360 / 4095) 양쪽으로 8도씩 좁힌 값이다.
-  # 참고: 이전의 +-120 은 실제 가동범위보다 넓어서 클램프가 사실상 무효였다.
-  #
-  # 이것은 팔의 '기구학적' 한계다. 작업대에 실제 장비를 배치한 뒤에는
-  # 팔이 그 장비를 치는 자세를 배제하도록 여기서 더 좁혀야 한다.
   # HOLD 에서 R 로 리셋했을 때 팔로워가 되돌아갈 자세 (스펙 §5.1.1).
-  # 2026-07-31 에 리더 암에서 떠온 값이다 (tools/capture_home_pose).
+  # 2026-08-03 에 리더 암에서 떠온 값이다 (tools/capture_home_pose).
   # 리더에서 뜨는 이유: 호밍이 끝나면 조종자가 리더를 이 자세에 맞춰야 정렬이
   # 끝나므로, 리더가 도달할 수 있는 자세여야 한다.
-  #
-  # elbow_flex 만 실측값 97.3 에서 85.0 으로 낮췄다. 97.3 은 캘리브레이션에 기록된
-  # 가동범위 최대치와 같아 팔꿈치가 끝단에 붙은 자세이고, 아래 joint_limits(89/90)
-  # 밖이라 설정 검증이 거부한다. 더 접힌 자세가 필요하면 실제 기구학적 스톱을
-  # 확인한 뒤 joint_limits 를 넓혀야 한다.
   home_pose:
-    left_shoulder_pan:     5.1     # deg
-    left_shoulder_lift:  -95.0     # deg
-    left_elbow_flex:      85.0     # deg  (실측 97.3 -> 한계 안으로 낮춤)
-    left_wrist_flex:      44.4     # deg
-    left_wrist_roll:      -9.9     # deg
-    left_gripper:          2.1     # percent
-    right_shoulder_pan:   -7.4     # deg
-    right_shoulder_lift: -90.7     # deg
-    right_elbow_flex:     85.0     # deg  (실측 97.3 -> 한계 안으로 낮춤)
-    right_wrist_flex:     45.1     # deg
+    left_shoulder_pan:     1.4     # deg
+    left_shoulder_lift: -104.1     # deg
+    left_elbow_flex:      96.8     # deg
+    left_wrist_flex:      58.4     # deg
+    left_wrist_roll:      -5.0     # deg
+    left_gripper:          2.1     # percent  (호밍이 그리퍼는 안 건드린다. 값은 무시됨)
+    right_shoulder_pan:    2.1     # deg
+    right_shoulder_lift: -104.0    # deg
+    right_elbow_flex:     97.1     # deg
+    right_wrist_flex:     60.7     # deg
     right_wrist_roll:      7.3     # deg
-    right_gripper:         1.4     # percent
+    right_gripper:         6.3     # percent  (무시됨)
 
   homing_max_step: 0.5          # 호밍 속도. 60Hz 기준 30도/초 (조종은 90도/초)
   homing_tolerance: 1.0         # 이 안으로 들어오면 호밍 완료
 
+  # joint_limits 가 막는 것은 **팔이 자기 몸통·작업대·장비를 치는 자세**다
+  # (작업공간 제한). 끝단에 눌려 미는 것은 추종 오차 감시가 잡는다 - 두 가지를
+  # 섞으면 안 된다.
+  #
+  # 처음에는 캘리브레이션 기록 범위에서 양쪽 8도를 깎았는데, 그게 조종자가 실제로
+  # 쓰는 자세를 배제해버렸다 (2026-08-03: home_pose 를 뜨니 관절 4개가 한계 밖).
+  # 게다가 **기록 범위는 진짜 기계적 한계가 아니다** - 캘리브레이션 때 훑은 만큼일
+  # 뿐이고, lerobot 의 도 변환은 값을 자르지 않아 그보다 큰 값도 그대로 읽힌다
+  # (실측: right_elbow_flex 가 기록 +-96.7 을 넘어 97.1 로 읽혔다).
+  #
+  # 그래서 지금은 실측 범위를 그대로 쓰고 home_pose 가 2도 이상 여유로 들어가게만
+  # 맞춘다. **작업대에 실제 장비를 배치한 뒤 그때 좁힌다** - 그것이 본래 용도다.
   joint_limits:
-    left_shoulder_pan:   [-101.0, 101.0]     # 실측 +-109.4
-    left_shoulder_lift:  [-102.0, 102.0]     # 실측 +-110.2
-    left_elbow_flex:     [ -89.0,  89.0]     # 실측 +-97.3
-    left_wrist_flex:     [ -93.0,  93.0]     # 실측 +-101.3
+    left_shoulder_pan:   [-110.0, 110.0]     # 실측 +-109.4
+    left_shoulder_lift:  [-111.0, 111.0]     # 실측 +-110.2, home -104.1
+    left_elbow_flex:     [-100.0, 100.0]     # 실측 +-97.3,  home 96.8
+    left_wrist_flex:     [-102.0, 102.0]     # 실측 +-101.3
     left_wrist_roll:     [-170.0, 170.0]     # 실측 +-180 (한 바퀴). 되감김 방지로 170
     left_gripper:        [   0.0, 100.0]     # 퍼센트 단위 (도가 아님)
-    right_shoulder_pan:  [-104.0, 104.0]     # 실측 +-112.8
-    right_shoulder_lift: [ -97.0,  97.0]     # 실측 +-105.4
-    right_elbow_flex:    [ -90.0,  90.0]     # 실측 +-98.1
-    right_wrist_flex:    [ -96.0,  96.0]     # 실측 +-104.2
+    right_shoulder_pan:  [-113.0, 113.0]     # 실측 +-112.8
+    right_shoulder_lift: [-107.0, 107.0]     # 실측 +-105.4, home -104.0
+    right_elbow_flex:    [-100.0, 100.0]     # 실측 +-98.1,  home 97.1
+    right_wrist_flex:    [-105.0, 105.0]     # 실측 +-104.2
     right_wrist_roll:    [-170.0, 170.0]     # 실측 +-180 (한 바퀴). 되감김 방지로 170
     right_gripper:       [   0.0, 100.0]     # 퍼센트 단위 (도가 아님)
 
