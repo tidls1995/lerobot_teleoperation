@@ -8,6 +8,7 @@
     python -m tools.probe_hardware --arms --kind leader   --config config/home.yaml
     python -m tools.probe_hardware --arms --kind follower --config config/workbench.yaml
     python -m tools.probe_hardware --cameras
+    python -m tools.probe_hardware --cameras-together --config config/workbench.yaml
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from __future__ import annotations
 import argparse
 import logging
 import pathlib
+import threading
 import time
 
 from common.joints import GRIPPER_INDICES
@@ -233,6 +235,139 @@ def snapshot_cameras(max_index: int, out_dir: str) -> int:
     return 0
 
 
+def cameras_together(config_path: str, fourcc: str | None, seconds: float) -> int:
+    """설정에 있는 카메라를 **서버와 똑같이 동시에** 열어 무엇이 실패하는지 본다.
+
+    ``--cameras`` 는 한 대씩 열고 **닫은 뒤** 다음으로 넘어가므로, 동시에 유지할 때
+    생기는 문제를 절대 재현하지 못한다. 실측(2026-08-03, 작업대 PC)에서 서버는
+    3대 중 2대만 열었는데 ``--cameras`` 는 4대 전부 성공했다. 그 차이가 여기 있다.
+
+    유력한 원인은 **USB 대역폭**이다. UVC 카메라가 비압축(YUY2)으로 스트리밍하면
+    대역폭을 프레임 크기에 비례해 미리 예약해버려서, 같은 컨트롤러에 여러 대가
+    붙으면 나중 것이 아예 열리지 않는다. 그래서 실제 협상된 포맷을 함께 찍는다 -
+    YUY2 로 나오면 그 가설이고, ``--fourcc MJPG`` 로 다시 돌려 확인한다.
+
+    **한 프로세스에서 한 번만 측정한다.** 같은 프로세스에서 포맷을 바꿔 두 번 재보면
+    앞선 열기가 남긴 드라이버 상태가 뒤 결과를 오염시킨다 (전례: 진단이 스스로
+    메인 스레드를 '예방주사' 놓아 모든 판정을 무효로 만든 일).
+    """
+    import cv2  # noqa: F401  # 서버와 같은 import 순서를 재현한다 (cv2 -> lerobot)
+
+    import lerobot.motors.feetech  # noqa: F401
+
+    from common.config import load_workbench_config
+    from workbench.usb_camera import UsbCamera
+
+    cfg = load_workbench_config(config_path)
+    if not cfg.cameras:
+        print(f"no cameras configured in {config_path}")
+        return 1
+
+    print(f"opening all {len(cfg.cameras)} cameras at once, like the server does")
+    if fourcc:
+        print(f"forcing pixel format {fourcc}")
+    print()
+
+    results: dict[int, dict] = {}
+    lock = threading.Lock()
+    stop = threading.Event()
+
+    def work(cam_cfg) -> None:
+        cam = UsbCamera(
+            cam_id=cam_cfg.id,
+            name=cam_cfg.name,
+            index=cam_cfg.index,
+            width=cam_cfg.width,
+            height=cam_cfg.height,
+            fps=cam_cfg.fps,
+            fourcc=fourcc,
+        )
+        entry = results[cam_cfg.id]
+        try:
+            cam.open()
+        except Exception as exc:
+            with lock:
+                entry["error"] = str(exc).split(". Run")[0]
+            return
+        with lock:
+            entry["opened"] = True
+            entry["size"] = cam.actual_size
+            entry["fourcc"] = cam.actual_fourcc
+        # 서버와 같은 주기로 읽는다. 최대 성능을 재는 것이 아니라 재현이 목적이다.
+        interval = 1.0 / cam_cfg.fps
+        try:
+            while not stop.is_set():
+                started = time.monotonic()
+                if cam.read() is not None:
+                    with lock:
+                        entry["frames"] += 1
+                stop.wait(max(0.0, interval - (time.monotonic() - started)))
+        finally:
+            cam.close()
+
+    threads = []
+    for c in cfg.cameras:
+        results[c.id] = {
+            "name": c.name,
+            "index": c.index,
+            "opened": False,
+            "frames": 0,
+            "size": None,
+            "fourcc": None,
+            "error": None,
+        }
+        t = threading.Thread(target=work, args=(c,), name=f"probe-cam{c.id}", daemon=True)
+        threads.append(t)
+        t.start()
+
+    started = time.monotonic()
+    time.sleep(seconds)
+    stop.set()
+    for t in threads:
+        t.join(timeout=3.0)
+    elapsed = time.monotonic() - started
+
+    print("  id  name          index  opened  size       format  fps")
+    for cam_id in sorted(results):
+        r = results[cam_id]
+        size = f"{r['size'][0]}x{r['size'][1]}" if r["size"] else "-"
+        fps = f"{r['frames'] / elapsed:4.1f}" if r["opened"] else "-"
+        mark = "OK " if r["opened"] else "FAIL"
+        print(
+            f"  {cam_id:2d}  {r['name']:<13} {r['index']:5d}  {mark:6}  "
+            f"{size:<9}  {r['fourcc'] or '-':<6}  {fps}"
+        )
+        if r["error"]:
+            print(f"        -> {r['error']}")
+
+    opened = [r for r in results.values() if r["opened"]]
+    failed = [r for r in results.values() if not r["opened"]]
+    print()
+    print(f"{len(opened)} of {len(results)} cameras opened simultaneously")
+
+    if not failed:
+        print("All cameras work together. If the server still fails, the difference is")
+        print("not concurrency - look at what else the server does differently.")
+        return 0
+
+    formats = {r["fourcc"] for r in opened if r["fourcc"]}
+    print("This reproduces the server's failure, so the cause is holding several open")
+    print("at once - not the camera itself (--cameras opens them one at a time).")
+    if not fourcc and formats & {"YUY2", "YUYV", "RGB3", "BGR3", "I420", "NV12"}:
+        print()
+        print(f"The working cameras negotiated {sorted(formats)}, which is uncompressed.")
+        print("Uncompressed UVC streams reserve USB bandwidth up front, so the last")
+        print("camera has none left. Test that by re-running with:")
+        print("  python -m tools.probe_hardware --cameras-together --fourcc MJPG")
+        print("If that opens all of them, set 'fourcc: MJPG' on the cameras in the config.")
+    elif fourcc:
+        print()
+        print(f"{fourcc} did not help. The next thing to try is physical: move one camera")
+        print("to a USB port on a different controller (a port on the other side of the")
+        print("machine, or a different root hub - not another socket on the same hub).")
+    return 1
+
+
 def probe_cameras(max_index: int) -> int:
     """어느 인덱스에 카메라가 있는지, 실제 해상도와 프레임레이트가 얼마인지."""
     from workbench.usb_camera import CameraOpenError, UsbCamera
@@ -270,7 +405,12 @@ def main(argv: list[str] | None = None) -> int:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--ports", action="store_true", help="list serial ports and serial numbers")
     group.add_argument("--arms", action="store_true", help="open arms and read joint angles")
-    group.add_argument("--cameras", action="store_true", help="scan camera indices")
+    group.add_argument("--cameras", action="store_true", help="scan camera indices one at a time")
+    group.add_argument(
+        "--cameras-together",
+        action="store_true",
+        help="open every configured camera at once, like the server does",
+    )
     group.add_argument(
         "--snapshot",
         action="store_true",
@@ -289,6 +429,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-index", type=int, default=8, help="how many camera indices to scan")
     parser.add_argument("--out", default="cam_snapshots", help="where --snapshot writes photos")
     parser.add_argument("--seconds", type=float, default=4.0, help="how long each --check-sides step waits")
+    parser.add_argument(
+        "--fourcc",
+        default=None,
+        help="force a pixel format for --cameras-together, e.g. MJPG (default: leave it alone)",
+    )
     parser.add_argument("--log-level", default="WARNING")
     args = parser.parse_args(argv)
 
@@ -304,6 +449,8 @@ def main(argv: list[str] | None = None) -> int:
         return scan_motors()
     if args.snapshot:
         return snapshot_cameras(args.max_index, args.out)
+    if args.cameras_together:
+        return cameras_together(args.config, args.fourcc, max(args.seconds, 2.0))
     return probe_cameras(args.max_index)
 
 

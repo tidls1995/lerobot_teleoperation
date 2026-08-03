@@ -29,6 +29,10 @@ class CameraConfig:
     height: int
     fps: int
     jpeg_quality: int
+    # 픽셀 포맷. 생략하면 드라이버가 고르게 둔다. 여러 대를 한 USB 컨트롤러에
+    # 물릴 때 'MJPG' 가 필요할 수 있다 - 비압축 스트림은 USB 대역폭을 미리
+    # 예약해버려서 나중 카메라가 열리지 않는다.
+    fourcc: str | None = None
 
 
 @dataclass(frozen=True)
@@ -255,11 +259,16 @@ def _parse_cameras(raw: Any) -> list[CameraConfig]:
             height=int(_require(entry, "height", "camera")),
             fps=int(_require(entry, "fps", "camera")),
             jpeg_quality=int(_require(entry, "jpeg_quality", "camera")),
+            fourcc=(str(entry["fourcc"]) if entry.get("fourcc") else None),
         )
         if cam.id in seen:
             raise ConfigError(f"duplicate camera id: {cam.id}")
         if not (0 <= cam.jpeg_quality <= 100):
             raise ConfigError(f"camera {cam.id}: jpeg_quality must be 0..100")
+        if cam.fourcc is not None and len(cam.fourcc) != 4:
+            raise ConfigError(
+                f"camera {cam.id}: fourcc must be exactly 4 characters, got {cam.fourcc!r}"
+            )
         if cam.fps <= 0:
             raise ConfigError(f"camera {cam.id}: fps must be positive")
         seen.add(cam.id)

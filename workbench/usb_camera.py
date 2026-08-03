@@ -19,6 +19,16 @@ class CameraOpenError(Exception):
     """카메라를 열 수 없다."""
 
 
+def _decode_fourcc(value: float) -> str | None:
+    """cv2 가 정수로 주는 FOURCC 를 'MJPG' 같은 4글자로 되돌린다."""
+    code = int(value)
+    if code <= 0:
+        return None
+    chars = [chr((code >> shift) & 0xFF) for shift in (0, 8, 16, 24)]
+    text = "".join(chars).strip()
+    return text if text.isprintable() and text else None
+
+
 class UsbCamera:
     """USB 웹캠 한 대.
 
@@ -27,15 +37,26 @@ class UsbCamera:
     모드다 - 줄여 놓으면 알아보기 어렵다.
     """
 
-    def __init__(self, cam_id: int, name: str, index: int, width: int, height: int, fps: int) -> None:
+    def __init__(
+        self,
+        cam_id: int,
+        name: str,
+        index: int,
+        width: int,
+        height: int,
+        fps: int,
+        fourcc: str | None = None,
+    ) -> None:
         self._cam_id = cam_id
         self._name = name
         self._index = index
         self._width = width
         self._height = height
         self._fps = fps
+        self._fourcc = fourcc
         self._cap: cv2.VideoCapture | None = None
         self._actual_size: tuple[int, int] | None = None
+        self._actual_fourcc: str | None = None
 
     @property
     def is_open(self) -> bool:
@@ -46,6 +67,11 @@ class UsbCamera:
         """장치가 실제로 준 해상도. 요청값과 다를 수 있다."""
         return self._actual_size
 
+    @property
+    def actual_fourcc(self) -> str | None:
+        """장치가 실제로 쓰는 픽셀 포맷. 요청을 거부했으면 요청값과 다르다."""
+        return self._actual_fourcc
+
     def open(self) -> None:
         # Windows 에서는 DirectShow 백엔드가 기본(MSMF)보다 열기가 빠르고 안정적이다.
         cap = cv2.VideoCapture(self._index, cv2.CAP_DSHOW)
@@ -55,6 +81,15 @@ class UsbCamera:
                 f"camera {self._cam_id} ({self._name}): cannot open device index {self._index}. "
                 "Run 'python -m tools.probe_hardware --cameras' to see which indices exist."
             )
+
+        # 포맷을 해상도보다 **먼저** 정한다. DSHOW 는 순서가 중요해서, 뒤집으면
+        # 해상도만 반영되고 포맷은 드라이버 기본(보통 YUY2)으로 남는다.
+        #
+        # MJPG 를 쓰는 이유는 화질이나 CPU 가 아니라 **USB 대역폭**이다. 비압축
+        # 스트림은 대역폭을 프레임 크기에 비례해 미리 예약해버려서, 같은 컨트롤러에
+        # 여러 대가 붙으면 나중 것이 아예 열리지 않는다.
+        if self._fourcc:
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self._fourcc))
 
         if self._width > 0 and self._height > 0:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
@@ -74,6 +109,16 @@ class UsbCamera:
 
         self._cap = cap
         self._actual_size = (frame.shape[1], frame.shape[0])
+        self._actual_fourcc = _decode_fourcc(cap.get(cv2.CAP_PROP_FOURCC))
+        if self._fourcc and self._actual_fourcc not in (None, self._fourcc):
+            log.warning(
+                "camera %d (%s): asked for %s, device is using %s - the format request "
+                "was refused",
+                self._cam_id,
+                self._name,
+                self._fourcc,
+                self._actual_fourcc,
+            )
         if self._width > 0 and self._actual_size != (self._width, self._height):
             log.warning(
                 "camera %d (%s): asked for %dx%d, device gave %dx%d - frames will be "

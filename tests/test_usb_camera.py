@@ -58,6 +58,9 @@ class _FakeCapture:
     def set(self, prop, value):
         return True
 
+    def get(self, prop):
+        return 0.0  # 아무것도 모르는 장치
+
     def read(self):
         return True, self._frame.copy()
 
@@ -88,5 +91,119 @@ def test_a_frame_already_the_right_size_is_not_touched(monkeypatch):
     try:
         assert cam.actual_size == (320, 240)
         assert cam.read().shape[:2] == (240, 320)
+    finally:
+        cam.close()
+
+
+# --- 픽셀 포맷(FOURCC) --------------------------------------------------------
+#
+# UVC 카메라가 비압축(YUY2)으로 스트리밍하면 USB 대역폭을 프레임 크기에 비례해
+# **미리 예약**한다. 같은 컨트롤러에 여러 대가 붙으면 예약이 고갈되어 나중 것이
+# 열리지 않는다. MJPG 는 예약량이 훨씬 작다.
+#
+# 실측(2026-08-03, 작업대 PC): 서버가 카메라 3대 중 2대만 열었다. 한 대씩 순차로
+# 여는 probe 는 4대 다 성공했으므로, 차이는 '동시에 유지'하는 것뿐이다.
+
+
+class _FourccCapture(_FakeCapture):
+    """set() 호출 순서와 FOURCC 를 기억한다. DSHOW 는 설정 순서가 중요하다."""
+
+    def __init__(self, height=240, width=320, fourcc=0x32595559):  # 기본 'YUY2'
+        super().__init__(height, width)
+        self.calls: list[tuple[int, float]] = []
+        self._fourcc = fourcc
+
+    def set(self, prop, value):
+        import cv2
+
+        self.calls.append((prop, value))
+        if prop == cv2.CAP_PROP_FOURCC:
+            self._fourcc = int(value)
+        return True
+
+    def get(self, prop):
+        import cv2
+
+        if prop == cv2.CAP_PROP_FOURCC:
+            return float(self._fourcc)
+        return 0.0
+
+
+def test_fourcc_is_not_touched_by_default(monkeypatch):
+    """포맷을 지정하지 않으면 드라이버가 고른 것을 그대로 쓴다."""
+    import cv2
+
+    import workbench.usb_camera as mod
+
+    cap = _FourccCapture()
+    monkeypatch.setattr(mod.cv2, "VideoCapture", lambda *a, **k: cap)
+    cam = UsbCamera(cam_id=0, name="c", index=0, width=320, height=240, fps=15)
+    cam.open()
+    cam.close()
+
+    assert not any(prop == cv2.CAP_PROP_FOURCC for prop, _ in cap.calls)
+
+
+def test_fourcc_is_set_before_the_resolution(monkeypatch):
+    """DSHOW 에서는 포맷을 해상도보다 먼저 정해야 원하는 조합이 잡힌다.
+
+    순서를 뒤집으면 해상도만 반영되고 포맷은 드라이버 기본(보통 YUY2)으로 남는다.
+    """
+    import cv2
+
+    import workbench.usb_camera as mod
+
+    cap = _FourccCapture()
+    monkeypatch.setattr(mod.cv2, "VideoCapture", lambda *a, **k: cap)
+    cam = UsbCamera(cam_id=0, name="c", index=0, width=320, height=240, fps=15, fourcc="MJPG")
+    cam.open()
+    cam.close()
+
+    props = [prop for prop, _ in cap.calls]
+    assert cv2.CAP_PROP_FOURCC in props, "포맷을 지정했는데 설정하지 않았다"
+    assert props.index(cv2.CAP_PROP_FOURCC) < props.index(cv2.CAP_PROP_FRAME_WIDTH)
+
+
+def test_actual_fourcc_reports_what_the_device_negotiated(monkeypatch):
+    """요청과 실제가 다를 수 있으므로 실제 값을 읽어 보고한다."""
+    import workbench.usb_camera as mod
+
+    cap = _FourccCapture(fourcc=0x32595559)  # 'YUY2'
+    monkeypatch.setattr(mod.cv2, "VideoCapture", lambda *a, **k: cap)
+    cam = UsbCamera(cam_id=0, name="c", index=0, width=320, height=240, fps=15)
+    cam.open()
+    try:
+        assert cam.actual_fourcc == "YUY2"
+    finally:
+        cam.close()
+
+
+def test_actual_fourcc_is_none_before_open():
+    assert make().actual_fourcc is None
+
+
+def test_a_device_that_ignores_the_format_request_is_reported_honestly(monkeypatch):
+    """MJPG 를 요청했는데 YUY2 로 남으면 그 사실이 보여야 한다.
+
+    그렇지 않으면 '포맷을 바꿨는데도 안 열린다'와 '포맷이 안 바뀌었다'를 구분할 수
+    없어, 또 엉뚱한 곳을 고치게 된다.
+    """
+    import cv2
+
+    import workbench.usb_camera as mod
+
+    class Stubborn(_FourccCapture):
+        def set(self, prop, value):
+            self.calls.append((prop, value))
+            if prop == cv2.CAP_PROP_FOURCC:
+                return False  # 요청을 거부하고 YUY2 를 유지한다
+            return True
+
+    cap = Stubborn(fourcc=0x32595559)
+    monkeypatch.setattr(mod.cv2, "VideoCapture", lambda *a, **k: cap)
+    cam = UsbCamera(cam_id=0, name="c", index=0, width=320, height=240, fps=15, fourcc="MJPG")
+    cam.open()
+    try:
+        assert cam.actual_fourcc == "YUY2"
     finally:
         cam.close()

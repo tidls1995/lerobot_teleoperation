@@ -245,7 +245,13 @@ def build_server(cfg: WorkbenchConfig) -> tuple[TeleopServer, list[CameraPublish
         follower = RealFollowerArms(arms=cfg.arms)
         cameras = [
             UsbCamera(
-                cam_id=c.id, name=c.name, index=c.index, width=c.width, height=c.height, fps=c.fps
+                cam_id=c.id,
+                name=c.name,
+                index=c.index,
+                width=c.width,
+                height=c.height,
+                fps=c.fps,
+                fourcc=c.fourcc,
             )
             for c in cfg.cameras
         ]
