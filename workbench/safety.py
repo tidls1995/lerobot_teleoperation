@@ -13,6 +13,7 @@ import logging
 from dataclasses import dataclass
 
 from common.config import SafetyConfig
+from common.joints import GRIPPER_INDICES
 from common.protocol import JOINT_NAMES, N_JOINTS, Cmd, ControlPacket, Flag, State
 
 log = logging.getLogger(__name__)
@@ -124,7 +125,9 @@ class SafetyGate:
             flags |= self._watch_follow_error(actual, now)
             if self._state is State.HOLD:
                 return self._result(flags)
-            flags |= self._move_toward(self._cfg.home_pose_list(), self._cfg.homing_max_step)
+            flags |= self._move_toward(
+                self._cfg.home_pose_list(), self._cfg.homing_max_step, skip=GRIPPER_INDICES
+            )
             if self._at_home():
                 # 실제각이 아니라 명령각을 유지한다. 실제각은 뒤따라오는 중이다.
                 assert self._applied is not None
@@ -188,7 +191,9 @@ class SafetyGate:
             self._to_hold("follow error - arm may be blocked", Flag.FOLLOW_ERROR)
         return int(Flag.FOLLOW_ERROR)
 
-    def _move_toward(self, goal: list[float], step_limit: float | None) -> int:
+    def _move_toward(
+        self, goal: list[float], step_limit: float | None, skip: tuple[int, ...] = ()
+    ) -> int:
         """목표를 향해 관절 한계와 속도 제한 안에서 한 프레임만큼 나아간다.
 
         순서가 중요하다. 먼저 관절 한계로 목표를 자르고, 그 목표를 향해 속도
@@ -198,12 +203,16 @@ class SafetyGate:
             goal: 12칸 목표. 조종에서는 리더 각도, 호밍에서는 home 자세.
             step_limit: 프레임당 최대 이동량. None 이면 관절별 값을 쓴다
                 (그리퍼는 퍼센트 단위라 다르다, 스펙 §5.4).
+            skip: 건드리지 않을 관절 인덱스. 지금 명령각을 그대로 유지한다.
         """
         assert self._applied is not None
         cfg = self._cfg
         flags = 0
         targets: list[float] = []
         for i, name in enumerate(JOINT_NAMES):
+            if i in skip:
+                targets.append(self._applied[i])
+                continue
             lo, hi = cfg.joint_limits[name]
 
             desired = goal[i]
@@ -223,11 +232,18 @@ class SafetyGate:
         return flags
 
     def _at_home(self) -> bool:
-        """호밍 목표에 도달했는가. 명령각을 기준으로 본다 - 실제각은 뒤따라온다."""
+        """호밍 목표에 도달했는가. 명령각을 기준으로 본다 - 실제각은 뒤따라온다.
+
+        그리퍼는 애초에 움직이지 않으므로 판정에서도 뺀다. 넣으면 영원히 끝나지 않는다.
+        """
         home = self._cfg.home_pose_list()
         assert home is not None and self._applied is not None
         tol = self._cfg.homing_tolerance
-        return all(abs(self._applied[i] - home[i]) <= tol for i in range(N_JOINTS))
+        return all(
+            abs(self._applied[i] - home[i]) <= tol
+            for i in range(N_JOINTS)
+            if i not in GRIPPER_INDICES
+        )
 
     def _enter_homing(self, actual: list[float]) -> None:
         self._state = State.HOMING
