@@ -8,3 +8,13 @@ __pycache__/
 # HUD 미리보기를 렌더링해 보는 일이 반복된다. 저장소에 쌓이지 않게 한다.
 # 문서에 그림을 넣게 되면 docs/img/ 를 예외로 둔다.
 *.png
+
+# 캘리브레이션은 저장소에 두지 않는다. 정본은 lerobot 이 읽는 한 곳뿐이다:
+#   %USERPROFILE%\.cache\huggingface\lerobot\calibration\robots\so_follower\
+# PC 사이로 옮길 때는 tools/move_calibration.py 를 쓴다.
+#
+# 여기 걸어 두는 이유: 저장소 안에 robots/so_follower/*.json 을 복사해 두면
+# lerobot 이 그걸 읽을 것처럼 보이지만 읽지 않는다. 실제로 그렇게 해 두고
+# "파일이 있는데 has no calibration registered" 로 한참 헤맸다 (2026-08-03).
+robots/
+_cal/
