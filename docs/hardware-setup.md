@@ -206,6 +206,37 @@ OSError: [WinError 87] 매개 변수가 틀립니다
 스레드에서 한다. import 순서를 바꿔서 피할 수도 있지만, 누가 import 한 줄을 옮기면
 조용히 재발한다.
 
+**5-1b. 같은 원인으로 카메라도 안 열렸다 — 패턴으로 기억할 것.**
+
+카메라 3대를 붙이자 서버에서 3대 다 열리지 않았다:
+
+```
+VIDEOIO(DSHOW): backend is generally available but can't be used to capture by index
+CameraOpenError: camera 0 (front): cannot open device index 3
+```
+
+그런데 `probe_hardware --cameras` 는 같은 순간 4대를 다 열었다. 차이는 lerobot 이었다:
+
+```
+import cv2                        -> VideoCapture(3, CAP_DSHOW) 열림
+import cv2, lerobot...            -> 안 열림   (서버와 같은 순서)
+import lerobot..., cv2            -> 열림
+```
+
+**5-1 과 같은 뿌리다.** 그때는 SetupAPI(`SetupDiClassGuidsFromNameW`), 이번엔
+DirectShow. 둘 다 **Windows 장치 API** 이고, 둘 다 **메인 스레드에서만** 고장난다.
+
+→ `CameraPublisher._loop` 가 장치를 연다. 짧은 스레드에서 열어 객체만 넘기는 방식은
+쓰지 않았다 — DirectShow 는 COM 기반이라 만든 스레드의 아파트먼트가 중요하고, 만든
+스레드와 읽는 스레드가 다르면 또 다른 문제가 생긴다. 캡처 스레드가 이미 읽기를
+담당하므로 거기서 열면 **열기와 읽기가 같은 스레드**가 된다.
+
+> **패턴: 이 프로세스에서 Windows 장치 API 를 메인 스레드에서 부르지 않는다.**
+> cv2 와 torch/lerobot 이 끌어오는 DLL 무리가 이미 존재하던 메인 스레드의 스레드
+> 로컬 저장소를 고갈시키는 것으로 보인다. 나중에 만든 스레드는 영향이 없다.
+> 새로 장치 열거·열기를 추가한다면 **처음부터 스레드에서** 하고, 가능하면 그것을
+> 계속 쓰는 스레드에서 해라.
+
 **5-2. 진단 도구가 스스로에게 예방접종을 했다 (방법론적 교훈).**
 
 한 스레드에서 `comports()` 가 한 번 성공하면 그 스레드는 그 뒤로 계속 성공한다.

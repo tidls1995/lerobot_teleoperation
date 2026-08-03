@@ -73,17 +73,8 @@ class CameraPublisher:
     def start(self) -> None:
         if self._thread is not None:
             return
-        # 실물 카메라는 여기서 장치를 연다. mock 에는 open() 이 없다.
-        opener = getattr(self._camera, "open", None)
-        if callable(opener):
-            try:
-                opener()
-            except Exception:
-                # 카메라 1대 때문에 조종 전체를 못 하게 만들지 않는다 (스펙 §9).
-                # 이 퍼블리셔는 스레드를 띄우지 않고, latest() 는 None 으로 남는다.
-                # 클라이언트 화면에는 그 칸만 "no signal" 로 뜬다.
-                log.exception("camera %d: open failed, this camera is disabled", self._cam_id)
-                return
+        # 장치를 여는 것은 캡처 스레드가 한다 (_loop 참조). 메인 스레드에서 열면
+        # 안 되기 때문이다.
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name=f"cam{self._cam_id}", daemon=True)
         self._thread.start()
@@ -96,6 +87,38 @@ class CameraPublisher:
         self._camera.close()
 
     def _loop(self) -> None:
+        """장치를 열고, 멈추라고 할 때까지 지정한 fps 로 찍는다.
+
+        **열기를 이 스레드 안에서 하는 이유** (실측 2026-08-03, 작업대 PC):
+        cv2 를 먼저, lerobot 을 나중에 import 한 프로세스의 **메인 스레드**에서는
+        ``cv2.VideoCapture(index, CAP_DSHOW)`` 가 열리지 않는다.
+
+            import cv2                 -> True
+            import cv2, lerobot...     -> False   (서버와 같은 순서)
+            import lerobot..., cv2     -> True
+
+        시리얼 포트 열거가 [WinError 87] 로 죽던 것과 같은 뿌리로 보인다. 그때는
+        SetupAPI 였고 이번엔 DirectShow 다.
+
+        짧은 스레드에서 열어 객체만 넘기는 방식은 쓰지 않는다. DirectShow 는 COM
+        기반이라 만든 스레드의 아파트먼트가 중요하고, 만든 스레드와 읽는 스레드가
+        다르면 또 다른 문제가 생긴다. 이 스레드가 이미 읽기를 담당하므로 여기서
+        열면 **열기와 읽기가 같은 스레드**가 된다.
+
+        import 순서를 바꿔서 피할 수도 있지만, 누가 import 한 줄을 옮기면 조용히
+        재발한다.
+        """
+        opener = getattr(self._camera, "open", None)
+        if callable(opener):
+            try:
+                opener()
+            except Exception:
+                # 카메라 1대 때문에 조종 전체를 못 하게 만들지 않는다 (스펙 §9).
+                # 이 스레드는 그냥 끝나고 latest() 는 None 으로 남으므로, 클라이언트
+                # 화면에는 그 칸만 "no signal" 로 뜬다.
+                log.exception("camera %d: open failed, this camera is disabled", self._cam_id)
+                return
+
         while not self._stop.is_set():
             started = self._clock()
             try:

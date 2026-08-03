@@ -194,3 +194,91 @@ def test_other_cameras_keep_streaming_when_one_fails_to_open():
         server.stop()
         good.stop()
         bad.stop()
+
+
+# --- 카메라 열기는 메인 스레드에서 하면 안 된다 ------------------------------
+#
+# 실측(2026-08-03, 작업대 PC): cv2 를 먼저, lerobot 을 나중에 import 한 프로세스의
+# 메인 스레드에서는 cv2.VideoCapture(index, CAP_DSHOW) 가 열리지 않는다.
+#   import cv2                        -> True
+#   import cv2, lerobot...            -> False   (서버와 같은 순서)
+#   import lerobot..., cv2            -> True
+# 시리얼 포트 열거의 [WinError 87] 과 같은 뿌리로 보인다. 그때는 SetupAPI,
+# 이번엔 DirectShow 다.
+#
+# 짧은 스레드에서 열어 객체만 넘기는 방식은 쓰지 않는다. DirectShow 는 COM 기반이라
+# 만든 스레드의 아파트먼트가 중요하고, 만든 스레드와 읽는 스레드가 다르면 또 다른
+# 문제가 생긴다. CameraPublisher 는 이미 자기 캡처 스레드를 가지고 있으므로,
+# 열기를 그 스레드 안으로 옮겨 **열기와 읽기가 같은 스레드**에서 일어나게 한다.
+
+
+class ThreadRecordingCamera:
+    def __init__(self):
+        import threading
+
+        self.opened_on_main = None
+        self.read_on_main = None
+        self._threading = threading
+
+    def open(self):
+        self.opened_on_main = (
+            self._threading.current_thread() is self._threading.main_thread()
+        )
+
+    def read(self):
+        import numpy as np
+
+        self.read_on_main = (
+            self._threading.current_thread() is self._threading.main_thread()
+        )
+        return np.zeros((48, 64, 3), dtype=np.uint8)
+
+    def close(self):
+        pass
+
+
+def test_the_camera_is_opened_off_the_main_thread():
+    cam = ThreadRecordingCamera()
+    pub = CameraPublisher(camera=cam, cam_id=0, fps=30, jpeg_quality=70)
+    pub.start()
+    try:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and pub.latest() is None:
+            time.sleep(0.01)
+        assert pub.latest() is not None, "프레임이 나오지 않았다"
+    finally:
+        pub.stop()
+
+    assert cam.opened_on_main is False, "open() 이 메인 스레드에서 불렸다"
+    assert cam.read_on_main is False, "read() 도 같은 캡처 스레드여야 한다"
+
+
+def test_open_and_read_happen_on_the_same_thread():
+    """DirectShow 는 COM 아파트먼트에 묶이므로 열기와 읽기가 같은 스레드여야 한다."""
+    import threading
+
+    seen = {}
+
+    class SameThreadCamera:
+        def open(self):
+            seen["open"] = threading.current_thread().name
+
+        def read(self):
+            import numpy as np
+
+            seen["read"] = threading.current_thread().name
+            return np.zeros((48, 64, 3), dtype=np.uint8)
+
+        def close(self):
+            pass
+
+    pub = CameraPublisher(camera=SameThreadCamera(), cam_id=0, fps=30, jpeg_quality=70)
+    pub.start()
+    try:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and "read" not in seen:
+            time.sleep(0.01)
+    finally:
+        pub.stop()
+
+    assert seen.get("open") == seen.get("read"), f"열기와 읽기가 다른 스레드: {seen}"
