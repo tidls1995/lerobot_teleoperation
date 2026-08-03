@@ -50,12 +50,12 @@ class RealFollowerArms:
         """
         # **포트를 하나라도 열기 전에 전부 조회한다.**
         #
-        # 두 가지 이유가 있다.
-        # 1. 조회 실패는 하드웨어를 건드리기 전에 잡는 것이 맞다. 왼팔을 연 뒤에
-        #    오른팔 조회가 실패하면 왼팔만 통전된 어중간한 상태로 죽는다.
-        # 2. 실측(2026-08-03, 작업대 PC): 열린 시리얼 포트가 있는 상태에서
-        #    Windows 장치 열거가 [WinError 87] 로 실패했다. 왼팔을 연 뒤의
-        #    오른팔 조회가 바로 그 상황이었다.
+        # 조회 실패는 하드웨어를 건드리기 전에 잡는 것이 맞다. 왼팔을 연 뒤에
+        # 오른팔 조회가 실패하면 왼팔만 통전된 어중간한 상태로 죽는다.
+        #
+        # (한때 이 순서가 [WinError 87] 의 해결책이라고 적혀 있었다. 아니다.
+        #  열린 포트는 열거와 무관하다 - 'probe_hardware --list-while-open' 로
+        #  확인할 수 있다. 진짜 원인은 common/serial_ports.py 에 적어 두었다.)
         ports = {
             side: resolve_port_spec(self._arms[side].serial_number, self._arms[side].port)
             for side in ARM_SIDES

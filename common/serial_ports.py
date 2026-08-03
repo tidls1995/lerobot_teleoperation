@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 
@@ -18,16 +19,55 @@ from serial.tools import list_ports
 
 log = logging.getLogger(__name__)
 
-#: Windows 장치 열거를 몇 번까지 다시 시도할 것인가.
+#: 장치 열거를 몇 번까지 다시 시도할 것인가.
 #:
-#: 실측(2026-08-03, 작업대 PC): 서버 기동 중 pyserial 의 ``comports()`` 가
-#: ``OSError: [WinError 87] 매개 변수가 틀립니다`` 로 죽어 **서버 전체가 내려갔다.**
-#: 직후 같은 명령을 3번 돌리니 3번 다 성공했다. 장치 목록을 순회하는 도중 USB
-#: 상태가 바뀌면 발생하는 일시적 실패다.
-#:
-#: 이 조회는 팔 연결 재시도 **바깥**에 있어서 보호를 못 받고 있었다.
+#: 아래 ``[WinError 87]`` 과는 무관하다. 그 고장은 재시도로 낫지 않는다
+#: (실측: 10초간 50번 재시도해도 50번 다 실패). 진짜 일시적인 실패에만 쓰인다.
 _LIST_RETRIES = 4
 _LIST_RETRY_DELAY = 0.3
+
+
+def _comports_off_main_thread() -> list:
+    """``comports()`` 를 **새 스레드에서** 호출한다.
+
+    실측(2026-08-03, 작업대 PC). 서버가 포트 조회에서
+    ``OSError: [WinError 87] 매개 변수가 틀립니다`` 로 죽었다. pyserial 이 죽는
+    지점은 장치를 열거하기도 전, 클래스 이름 "Ports" 를 GUID 로 바꾸는
+    ``SetupDiClassGuidsFromNameW`` 호출이다. 측정으로 확인한 것:
+
+    * **메인 스레드만 고장난다.** 같은 프로세스에서 새 스레드로 부르면 성공하고,
+      그 직후 메인 스레드로 부르면 실패한다.
+    * cv2 와 lerobot.motors 가 **둘 다** 로드된 뒤 그 스레드에서 처음 SetupAPI 를
+      부를 때만 발생한다. 둘 중 하나만으로는 재현되지 않는다.
+    * 한 번 성공한 스레드는 그 뒤로 계속 성공한다. 그래서 시작하자마자 열거해 보는
+      진단 도구들은 전부 통과했고 (probe_startup, --diagnose), 그 통과가 오히려
+      원인을 가렸다.
+    * 재시도로는 낫지 않고, 열린 포트나 USB 재삽입과도 무관하다.
+
+    cv2 와 torch 가 끌어오는 수십 개의 DLL 이 이미 만들어져 있던 메인 스레드의
+    스레드 로컬 저장소를 고갈시키는, Windows 에서 알려진 증상이다. 새로 만든
+    스레드는 그 DLL 들이 다 올라온 뒤에 생기므로 영향을 받지 않는다.
+
+    import 순서를 바꿔서(lerobot 을 cv2 보다 먼저) 피할 수도 있지만, 그건 누가
+    import 한 줄을 옮기면 조용히 되돌아온다. 조회를 스레드로 옮기는 편이
+    호출자에게 영향이 없고 순서에 기대지 않는다.
+    """
+    box: dict[str, object] = {}
+
+    def work() -> None:
+        try:
+            box["ports"] = list_ports.comports()
+        except BaseException as exc:  # noqa: BLE001 - 호출 스레드로 그대로 넘긴다
+            box["error"] = exc
+
+    thread = threading.Thread(target=work, name="list-serial-ports", daemon=True)
+    thread.start()
+    thread.join()
+
+    error = box.get("error")
+    if error is not None:
+        raise error  # type: ignore[misc]
+    return box["ports"]  # type: ignore[return-value]
 
 
 class PortLookupError(Exception):
@@ -46,8 +86,9 @@ def list_serial_ports(
 ) -> list[PortInfo]:
     """현재 붙어 있는 시리얼 포트 목록.
 
-    Windows 의 장치 열거는 간헐적으로 실패한다. 일시적 실패로 서버가 통째로
-    내려가면 안 되므로 다시 시도한다.
+    장치 열거는 간헐적으로 실패할 수 있다. 일시적 실패로 서버가 통째로
+    내려가면 안 되므로 다시 시도한다. 조회 자체를 왜 새 스레드에서 하는지는
+    ``_comports_off_main_thread`` 를 보라.
 
     Raises:
         PortLookupError: 여러 번 시도해도 목록을 못 읽었을 때.
@@ -55,7 +96,7 @@ def list_serial_ports(
     last_error: OSError | None = None
     for attempt in range(1, retries + 1):
         try:
-            raw = list_ports.comports()
+            raw = _comports_off_main_thread()
         except OSError as exc:
             last_error = exc
             log.warning(
