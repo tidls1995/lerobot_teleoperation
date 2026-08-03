@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.log
+*.bak
+*.csv
+
+# HUD 미리보기를 렌더링해 보는 일이 반복된다. 저장소에 쌓이지 않게 한다.
+# 문서에 그림을 넣게 되면 docs/img/ 를 예외로 둔다.
+*.png
