@@ -258,118 +258,11 @@ def build_server(cfg: WorkbenchConfig) -> tuple[TeleopServer, list[CameraPublish
     return TeleopServer(cfg=cfg, follower=follower, video=video), publishers
 
 
-def _diagnose_enumeration(label: str) -> None:
-    """이 시점에 시리얼 포트를 열거할 수 있는지 찍는다 (--diagnose 전용).
-
-    서버가 포트 조회에서 죽는데 같은 순서를 별도 스크립트로 재현하면 성공한다.
-    재현이 충실하지 않다는 뜻이므로, **이 프로세스 안에서** 직접 잰다.
-    ``python -m`` 으로 __main__ 으로 실행되는 것까지 포함해야 조건이 같아진다.
-    """
-    from serial.tools import list_ports
-
-    try:
-        ports = list(list_ports.comports())
-    except Exception as exc:
-        print(f"  [FAIL] {label:34s} {type(exc).__name__}: {exc}")
-        return
-    print(f"  [ok  ] {label:34s} {len(ports)} port(s)")
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SO-101 teleoperation workbench server")
     parser.add_argument("--config", default="config/workbench.yaml")
     parser.add_argument("--log-level", default="INFO")
-    parser.add_argument(
-        "--diagnose",
-        action="store_true",
-        help="report serial port enumeration at each startup step, then exit",
-    )
-    parser.add_argument(
-        "--diagnose-cold",
-        action="store_true",
-        help="call comports() exactly once, after --cold-step, then exit",
-    )
-    parser.add_argument(
-        "--cold-step",
-        choices=["none", "lerobot", "cv2", "both", "build"],
-        default="build",
-        help="what to do before the single comports() call",
-    )
     args = parser.parse_args(argv)
-
-    if args.diagnose_cold:
-        # --diagnose 는 A 단계에서 comports() 를 먼저 부른다. 그 뒤로는 전부
-        # 성공한다. 일반 실행만 build_server() **뒤에** 처음 부르고 실패한다.
-        # 여기서는 미리 부르지 않고, 무엇을 하기 전과 후에 딱 한 번씩만 재서
-        # 어느 import 가 첫 호출을 깨뜨리는지 가른다.
-        print("calling comports() exactly once, after the named step\n")
-        step = args.cold_step
-        if step in ("lerobot", "both"):
-            import lerobot.robots.so_follower  # noqa: F401
-
-            print("  imported lerobot.robots.so_follower")
-        if step in ("cv2", "both"):
-            import cv2  # noqa: F401
-
-            print("  imported cv2")
-        if step == "build":
-            cfg = load_workbench_config(args.config)
-            build_server(cfg)
-            print("  ran build_server()")
-        if step == "none":
-            print("  did nothing")
-        _diagnose_enumeration(f"first comports() after '{step}'")
-        return 0
-
-    if args.diagnose:
-        print("enumerating serial ports at each step of the real server startup\n")
-        _diagnose_enumeration("A. main() entry, before anything")
-        logging.basicConfig(level=args.log_level.upper(), format="%(message)s")
-        _diagnose_enumeration("B. after logging.basicConfig")
-        cfg = load_workbench_config(args.config)
-        _diagnose_enumeration("C. after load_workbench_config")
-        server, publishers = build_server(cfg)
-        _diagnose_enumeration("D. after build_server")
-        for pub in publishers:
-            pub.start()
-        _diagnose_enumeration(f"E. after starting {len(publishers)} publisher(s)")
-        sock = server._bind_control_socket()
-        _diagnose_enumeration("F. after _bind_control_socket")
-        _ = sock.getsockname()[1]
-        _diagnose_enumeration("G. after getsockname")
-
-        # 여기부터가 핵심이다. G 는 list_ports.comports() 를 **직접** 부르고,
-        # 실패하는 경로는 우리 wrapper 를 거친다. 같은 프로세스에서 둘을 나란히
-        # 재야 어느 쪽이 다른지 알 수 있다.
-        from common.serial_ports import list_serial_ports, resolve_port_spec
-
-        try:
-            found = list_serial_ports(retries=1, delay=0.0)
-            print(f"  [ok  ] {'H. our list_serial_ports()':34s} {len(found)} port(s)")
-        except Exception as exc:
-            print(f"  [FAIL] {'H. our list_serial_ports()':34s} {type(exc).__name__}: {exc}")
-
-        _diagnose_enumeration("I. direct comports() again")
-
-        for side in ("left", "right"):
-            arm = cfg.arms[side]
-            try:
-                port = resolve_port_spec(arm.serial_number, arm.port)
-                print(f"  [ok  ] {'J. resolve ' + side:34s} {port}")
-            except Exception as exc:
-                print(f"  [FAIL] {'J. resolve ' + side:34s} {type(exc).__name__}: {exc}")
-
-        try:
-            server._follower.connect()
-            print(f"  [ok  ] {'K. follower.connect()':34s} both arms opened")
-            server._follower.close()
-        except Exception as exc:
-            print(f"  [FAIL] {'K. follower.connect()':34s} {type(exc).__name__}: {exc}")
-
-        sock.close()
-        print("\nThe first [FAIL] is the step that breaks enumeration.")
-        print("H failing while G and I succeed would mean our wrapper is the difference.")
-        return 0
 
     logging.basicConfig(
         level=args.log_level.upper(),

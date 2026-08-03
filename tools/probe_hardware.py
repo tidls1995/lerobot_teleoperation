@@ -131,52 +131,6 @@ def scan_motors() -> int:
     return 1
 
 
-def list_while_open() -> int:
-    """시리얼 포트를 연 상태에서 장치 목록을 열거할 수 있는지 확인한다.
-
-    실측(2026-08-03, 작업대 PC): 서버가 왼팔을 연 뒤 오른팔 포트를 조회하는
-    시점에 ``[WinError 87]`` 로 죽었다. 포트를 열지 않고 조회하는 경로는 전부
-    성공했으므로, **열린 포트가 열거를 방해하는지**가 남은 가설이다.
-    """
-    import serial
-
-    from common.serial_ports import list_serial_ports
-
-    try:
-        before = list_serial_ports()
-    except Exception as exc:
-        print(f"cannot enumerate even before opening anything: {exc}")
-        return 1
-    if not before:
-        print("no serial ports found - are the arms plugged in?")
-        return 1
-
-    target = before[0].device
-    print(f"before opening anything: {len(before)} port(s)")
-    print(f"opening {target} ...")
-
-    handle = serial.Serial(target, 1000000, timeout=0.1)
-    try:
-        try:
-            during = list_serial_ports(retries=1, delay=0.0)
-        except Exception as exc:
-            print(f"  [FAIL] while {target} is open: {type(exc).__name__}: {exc}")
-            print()
-            print("CONFIRMED: enumerating fails while a serial port is open on this PC.")
-            print("The server resolves the left arm, opens it, then resolves the right")
-            print("arm - and that second lookup is what dies.")
-            return 1
-        print(f"  [ok  ] while {target} is open: {len(during)} port(s)")
-    finally:
-        handle.close()
-
-    after = list_serial_ports()
-    print(f"after closing: {len(after)} port(s)")
-    print()
-    print("An open port does not break enumeration here. The hypothesis is wrong.")
-    return 0
-
-
 def check_sides(config_path: str, kind: str, seconds: float) -> int:
     """한 팔만 움직였을 때 배열의 그 절반만 변하는지 확인한다.
 
@@ -272,11 +226,6 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument(
         "--scan-motors", action="store_true", help="ping motors 1-6 on every arm individually"
     )
-    group.add_argument(
-        "--list-while-open",
-        action="store_true",
-        help="check whether an open serial port breaks device enumeration",
-    )
     parser.add_argument("--config", default="config/workbench.yaml")
     parser.add_argument(
         "--kind", choices=["follower", "leader"], default="follower", help="which arms to open"
@@ -296,8 +245,6 @@ def main(argv: list[str] | None = None) -> int:
         return check_sides(args.config, args.kind, args.seconds)
     if args.scan_motors:
         return scan_motors()
-    if args.list_while_open:
-        return list_while_open()
     return probe_cameras(args.max_index)
 
 

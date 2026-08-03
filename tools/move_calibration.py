@@ -161,7 +161,12 @@ def main(argv: list[str] | None = None) -> int:
         for p in problems:
             print(f"  PROBLEM {p}")
         return 1
-    print(f"  all {len(args.verify)} calibration file(s) present and complete")
+    # 찾은 경로를 보여준다. 저장소 안에 사본을 두고 lerobot 이 읽을 것이라
+    # 착각해 "파일이 있는데 has no calibration registered" 로 한참 헤맨 적이 있다.
+    for cid in args.verify:
+        print(f"  {cid:16s} {_find(cid, root)}")
+    print(f"\n  all {len(args.verify)} calibration file(s) present and complete")
+    print(f"  lerobot only reads from: {root}")
     return 0
 
 

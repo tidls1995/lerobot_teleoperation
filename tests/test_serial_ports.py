@@ -139,3 +139,52 @@ def test_a_transient_failure_does_not_reach_find_port_by_serial(monkeypatch):
 
     monkeypatch.setattr("common.serial_ports.list_ports.comports", flaky)
     assert find_port_by_serial("ABC") == "COM9"
+
+
+# --- 조회는 메인 스레드에서 하면 안 된다 -------------------------------------
+#
+# 실측(2026-08-03, 작업대 PC): cv2 와 lerobot.motors 가 **둘 다** 로드된 뒤
+# 메인 스레드에서 SetupAPI 를 처음 부르면 [WinError 87] 로 죽는다. 같은 순간
+# 새 스레드에서 부르면 성공한다. cv2/torch 가 끌어오는 수십 개 DLL 이 이미
+# 존재하던 메인 스레드의 스레드 로컬 저장소를 고갈시키는 것으로 보인다.
+#
+# 이 테스트가 없으면 "스레드를 왜 쓰지?" 하고 직접 호출로 되돌아가고,
+# 그 PC 에서만 조용히 재발한다.
+
+
+def test_enumeration_runs_off_the_main_thread(monkeypatch):
+    import threading
+
+    seen = {}
+
+    def record():
+        seen["thread"] = threading.current_thread()
+        seen["is_main"] = threading.current_thread() is threading.main_thread()
+        return []
+
+    monkeypatch.setattr("common.serial_ports.list_ports.comports", record)
+    list_serial_ports(retries=1, delay=0.0)
+
+    assert seen["is_main"] is False, "comports() 가 메인 스레드에서 불렸다"
+
+
+def test_an_error_in_the_worker_thread_reaches_the_caller(monkeypatch):
+    """스레드로 옮겼다고 오류가 삼켜지면 안 된다."""
+
+    def boom():
+        raise OSError(87, "매개 변수가 틀립니다")
+
+    monkeypatch.setattr("common.serial_ports.list_ports.comports", boom)
+    with pytest.raises(PortLookupError, match="enumerate"):
+        list_serial_ports(retries=1, delay=0.0)
+
+
+def test_ports_found_in_the_worker_thread_come_back_intact(monkeypatch):
+    class FakePort:
+        device = "COM7"
+        serial_number = "XYZ"
+        description = "USB Serial"
+
+    monkeypatch.setattr("common.serial_ports.list_ports.comports", lambda: [FakePort()])
+    ports = list_serial_ports(retries=1, delay=0.0)
+    assert [(p.device, p.serial_number) for p in ports] == [("COM7", "XYZ")]
