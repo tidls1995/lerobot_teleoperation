@@ -3,13 +3,18 @@ use_mock: false         # 2단계-A: 실물 팔로워 암 2대. mock 으로 되�
 control_port: 5555      # UDP - 제어 + 텔레메트리
 video_port: 5556        # TCP - 영상 3채널 다중화
 
-# 2단계-A: USB 포트 4개가 팔 4대로 차서 카메라를 꽂을 수 없다.
-# 첫 실물 조종은 팔을 눈으로 직접 보면서 한다. 2단계-B 에서 아래를 되살린다.
-cameras: []
-# cameras:
-#   - { id: 0, name: front,       index: 0, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
-#   - { id: 1, name: wrist_left,  index: 1, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
-#   - { id: 2, name: wrist_right, index: 2, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
+# 카메라 3대. 2026-08-03 에 tools/probe_hardware --snapshot 으로 확인한 매핑이다.
+#
+# id 는 **화면에서의 자리**, index 는 **Windows 장치 번호**다. 둘은 어긋나도 된다 -
+# HUD 가 id 0=front, 1=wrist_left, 2=wrist_right 로 이름을 붙이므로 id 는 그 순서를
+# 지켜야 하고, index 는 Windows 가 준 번호를 그대로 쓴다.
+#
+# 이 PC 의 index 1 은 노트북 내장 웹캠이라 쓰지 않는다. index 는 USB 를 다시 꽂으면
+# 바뀔 수 있으므로, 화면에 엉뚱한 곳이 보이면 --snapshot 으로 다시 확인한다.
+cameras:
+  - { id: 0, name: front,       index: 3, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
+  - { id: 1, name: wrist_left,  index: 2, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
+  - { id: 2, name: wrist_right, index: 0, width: 320, height: 240, fps: 15, jpeg_quality: 80 }
 
 safety:
   align_threshold_deg: 3.0      # ENGAGED 진입에 필요한 최대 정렬 오차
