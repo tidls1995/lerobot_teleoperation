@@ -302,9 +302,38 @@ def main(argv: list[str] | None = None) -> int:
         _diagnose_enumeration("F. after _bind_control_socket")
         _ = sock.getsockname()[1]
         _diagnose_enumeration("G. after getsockname")
+
+        # 여기부터가 핵심이다. G 는 list_ports.comports() 를 **직접** 부르고,
+        # 실패하는 경로는 우리 wrapper 를 거친다. 같은 프로세스에서 둘을 나란히
+        # 재야 어느 쪽이 다른지 알 수 있다.
+        from common.serial_ports import list_serial_ports, resolve_port_spec
+
+        try:
+            found = list_serial_ports(retries=1, delay=0.0)
+            print(f"  [ok  ] {'H. our list_serial_ports()':34s} {len(found)} port(s)")
+        except Exception as exc:
+            print(f"  [FAIL] {'H. our list_serial_ports()':34s} {type(exc).__name__}: {exc}")
+
+        _diagnose_enumeration("I. direct comports() again")
+
+        for side in ("left", "right"):
+            arm = cfg.arms[side]
+            try:
+                port = resolve_port_spec(arm.serial_number, arm.port)
+                print(f"  [ok  ] {'J. resolve ' + side:34s} {port}")
+            except Exception as exc:
+                print(f"  [FAIL] {'J. resolve ' + side:34s} {type(exc).__name__}: {exc}")
+
+        try:
+            server._follower.connect()
+            print(f"  [ok  ] {'K. follower.connect()':34s} both arms opened")
+            server._follower.close()
+        except Exception as exc:
+            print(f"  [FAIL] {'K. follower.connect()':34s} {type(exc).__name__}: {exc}")
+
         sock.close()
         print("\nThe first [FAIL] is the step that breaks enumeration.")
-        print("If every step is [ok], the failure is inside connect() itself.")
+        print("H failing while G and I succeed would mean our wrapper is the difference.")
         return 0
 
     logging.basicConfig(
