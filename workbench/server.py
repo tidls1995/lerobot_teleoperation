@@ -258,11 +258,54 @@ def build_server(cfg: WorkbenchConfig) -> tuple[TeleopServer, list[CameraPublish
     return TeleopServer(cfg=cfg, follower=follower, video=video), publishers
 
 
+def _diagnose_enumeration(label: str) -> None:
+    """이 시점에 시리얼 포트를 열거할 수 있는지 찍는다 (--diagnose 전용).
+
+    서버가 포트 조회에서 죽는데 같은 순서를 별도 스크립트로 재현하면 성공한다.
+    재현이 충실하지 않다는 뜻이므로, **이 프로세스 안에서** 직접 잰다.
+    ``python -m`` 으로 __main__ 으로 실행되는 것까지 포함해야 조건이 같아진다.
+    """
+    from serial.tools import list_ports
+
+    try:
+        ports = list(list_ports.comports())
+    except Exception as exc:
+        print(f"  [FAIL] {label:34s} {type(exc).__name__}: {exc}")
+        return
+    print(f"  [ok  ] {label:34s} {len(ports)} port(s)")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SO-101 teleoperation workbench server")
     parser.add_argument("--config", default="config/workbench.yaml")
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="report serial port enumeration at each startup step, then exit",
+    )
     args = parser.parse_args(argv)
+
+    if args.diagnose:
+        print("enumerating serial ports at each step of the real server startup\n")
+        _diagnose_enumeration("A. main() entry, before anything")
+        logging.basicConfig(level=args.log_level.upper(), format="%(message)s")
+        _diagnose_enumeration("B. after logging.basicConfig")
+        cfg = load_workbench_config(args.config)
+        _diagnose_enumeration("C. after load_workbench_config")
+        server, publishers = build_server(cfg)
+        _diagnose_enumeration("D. after build_server")
+        for pub in publishers:
+            pub.start()
+        _diagnose_enumeration(f"E. after starting {len(publishers)} publisher(s)")
+        sock = server._bind_control_socket()
+        _diagnose_enumeration("F. after _bind_control_socket")
+        _ = sock.getsockname()[1]
+        _diagnose_enumeration("G. after getsockname")
+        sock.close()
+        print("\nThe first [FAIL] is the step that breaks enumeration.")
+        print("If every step is [ok], the failure is inside connect() itself.")
+        return 0
 
     logging.basicConfig(
         level=args.log_level.upper(),
