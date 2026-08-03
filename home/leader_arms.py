@@ -33,11 +33,19 @@ class RealLeaderArms:
         return bool(self._buses)
 
     def connect(self) -> None:
+        # 팔로워와 같은 이유로 **포트를 하나라도 열기 전에 전부 조회한다.**
+        # 조회 실패를 하드웨어 접촉 전에 잡고, 열린 포트가 있는 상태에서
+        # Windows 장치 열거가 실패하는 경우를 피한다.
+        ports = {
+            side: resolve_port_spec(self._arms[side].serial_number, self._arms[side].port)
+            for side in ARM_SIDES
+        }
         for side in ARM_SIDES:
             arm = self._arms[side]
-            port = resolve_port_spec(arm.serial_number, arm.port)
-            log.info("leader %s: opening %s (calibration id %s)", side, port, arm.calibration_id)
-            self._buses[side] = self._connect_one(side, port, arm)
+            log.info(
+                "leader %s: opening %s (calibration id %s)", side, ports[side], arm.calibration_id
+            )
+            self._buses[side] = self._connect_one(side, ports[side], arm)
 
     def _connect_one(self, side: str, port: str, arm: ArmConfig) -> SOLeader:
         """팔 한 대를 연결한다. 버스가 패킷을 흘리면 다시 시도한다."""

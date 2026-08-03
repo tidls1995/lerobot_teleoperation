@@ -48,11 +48,24 @@ class RealFollowerArms:
         멈춘다. 캘리브레이션 파일은 lerobot-calibrate CLI 로 미리 만들어 둔다
         (스펙 §7.2).
         """
+        # **포트를 하나라도 열기 전에 전부 조회한다.**
+        #
+        # 두 가지 이유가 있다.
+        # 1. 조회 실패는 하드웨어를 건드리기 전에 잡는 것이 맞다. 왼팔을 연 뒤에
+        #    오른팔 조회가 실패하면 왼팔만 통전된 어중간한 상태로 죽는다.
+        # 2. 실측(2026-08-03, 작업대 PC): 열린 시리얼 포트가 있는 상태에서
+        #    Windows 장치 열거가 [WinError 87] 로 실패했다. 왼팔을 연 뒤의
+        #    오른팔 조회가 바로 그 상황이었다.
+        ports = {
+            side: resolve_port_spec(self._arms[side].serial_number, self._arms[side].port)
+            for side in ARM_SIDES
+        }
         for side in ARM_SIDES:
             arm = self._arms[side]
-            port = resolve_port_spec(arm.serial_number, arm.port)
-            log.info("follower %s: opening %s (calibration id %s)", side, port, arm.calibration_id)
-            self._buses[side] = self._connect_one(side, port, arm)
+            log.info(
+                "follower %s: opening %s (calibration id %s)", side, ports[side], arm.calibration_id
+            )
+            self._buses[side] = self._connect_one(side, ports[side], arm)
 
     def _connect_one(self, side: str, port: str, arm: ArmConfig) -> SOFollower:
         """팔 한 대를 연결한다. 버스가 패킷을 흘리면 다시 시도한다."""
