@@ -77,11 +77,37 @@ def test_real_server_builds_real_adapters_without_touching_hardware():
 
 
 def test_real_client_builds_real_leader_without_touching_hardware():
-    from home.leader_arms import RealLeaderArms
+    from home.leader_arms_lite import LiteLeaderArms
 
     leader = build_leader(home(use_mock=False))
-    assert isinstance(leader, RealLeaderArms)
+    assert isinstance(leader, LiteLeaderArms)
     assert leader.is_connected is False
+
+
+def test_the_client_does_not_pull_in_lerobot():
+    """exe 로 묶으려면 클라이언트에 lerobot 이 들어가면 안 된다.
+
+    lerobot.motors.feetech 는 torch(4.2GB)와 pandas 를 딸고 온다. 실수로 다시
+    import 하면 exe 가 몇 GB 로 부풀어 배포할 수 없게 되는데, 그때는 이미 늦다.
+    무엇이 끌고 왔는지 찾기도 어렵다.
+    """
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys;"
+        "import home.client, home.leader_arms_lite, home.hud, home.video_recv;"
+        "import common.config, common.protocol, common.feetech_lite;"
+        "bad = sorted({m.split('.')[0] for m in sys.modules} & {'lerobot', 'torch', 'pandas'});"
+        # pygame 이 stdout 에 배너를 찍으므로 표식을 붙여 그 줄만 읽는다.
+        "print('HEAVY:' + ','.join(bad))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    line = next(x for x in result.stdout.splitlines() if x.startswith("HEAVY:"))
+    heavy = line.removeprefix("HEAVY:").strip()
+    assert heavy == "", f"the client now imports {heavy} - the exe would be gigabytes"
 
 
 def test_real_server_requires_arms_config():

@@ -295,20 +295,27 @@ class LeaderSender:
 
 
 def build_leader(cfg: HomeConfig):
-    """설정에 따라 mock/실물 리더를 만든다. 하드웨어는 아직 만지지 않는다."""
+    """설정에 따라 mock/실물 리더를 만든다. 하드웨어는 아직 만지지 않는다.
+
+    실물은 **lerobot 없이** 읽는다 (`LiteLeaderArms`). lerobot 을 import 하면
+    `torch` 4.2GB 가 딸려와 exe 로 묶을 수 없기 때문이다. 숫자가 같다는 것은
+    `tools/compare_read.py` 로 실물에서 확인했다 - 관절 12개 전부 차이 0.000.
+
+    lerobot 판(`home/leader_arms.py`)은 대조용으로 남아 있다.
+    """
     if cfg.use_mock:
         from mock.fake_arms import FakeLeaderArms
 
         return FakeLeaderArms()
 
-    from home.leader_arms import RealLeaderArms
+    from home.leader_arms_lite import LiteLeaderArms
 
     if not cfg.arms:
         raise ValueError(
             "use_mock is false but the config has no 'arms' section; "
             "add serial numbers for the leader arms"
         )
-    return RealLeaderArms(arms=cfg.arms)
+    return LiteLeaderArms(arms=cfg.arms)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -172,10 +172,12 @@ def _patch_packet_timeout(port_handler) -> None:
 class FeetechLiteBus:
     """한 시리얼 포트에 데이지체인된 STS3215 서보들.
 
-    lerobot 의 `FeetechMotorsBus` 와 같은 일을 하되, 조종에 필요한 것만 한다:
-    위치 읽기, 캘리브레이션 읽기, 상태 읽기. **쓰기는 하지 않는다** - 리더 암은
-    사람이 손으로 움직이는 것이라 서보에 명령할 일이 없고, 없는 기능은 잘못
-    쓰일 일도 없다.
+    lerobot 의 `FeetechMotorsBus` 와 같은 일을 하되, 리더 암에 필요한 것만 한다:
+    위치 읽기, 캘리브레이션 읽기, 상태 읽기, 그리고 **토크 끄기**.
+
+    `Goal_Position` 은 쓰지 않는다. 리더는 사람이 손으로 움직이는 것이라 서보에
+    자세를 명령할 일이 없고, 없는 기능은 잘못 쓰일 일도 없다. 토크 끄기는 반대로
+    **꼭 필요하다** - 켜진 채로는 사람이 팔을 움직일 수 없다.
     """
 
     def __init__(
@@ -252,6 +254,38 @@ class FeetechLiteBus:
         raise MotorError(
             f"motor {motor_id}: cannot read {name} - {self._packet_handler.getTxRxResult(result)}"
         )
+
+    def write(self, name: str, motor_id: int, value: int, retries: int = 2) -> None:
+        """제어 테이블 항목 하나를 쓴다. 부호 인코딩이 필요하면 씌워서 보낸다."""
+        self._require_open()
+        import scservo_sdk as scs
+
+        addr, length = ADDR[name]
+        sign_bit = SIGN_BIT.get(name)
+        payload = encode_sign_magnitude(value, sign_bit) if sign_bit is not None else value
+        writer = (
+            self._packet_handler.write1ByteTxRx if length == 1 else self._packet_handler.write2ByteTxRx
+        )
+
+        result = scs.COMM_RX_FAIL
+        for _ in range(retries + 1):
+            # 쓰기는 (result, error) 2-튜플이다. 읽기의 3-튜플과 다르다.
+            result, _ = writer(self._port_handler, motor_id, addr, payload)
+            if result == scs.COMM_SUCCESS:
+                return
+        raise MotorError(
+            f"motor {motor_id}: cannot write {name} - {self._packet_handler.getTxRxResult(result)}"
+        )
+
+    def disable_torque(self, retries: int = 5) -> None:
+        """모든 모터의 토크를 끈다. 켜진 채로는 사람이 리더를 움직일 수 없다.
+
+        재시도를 넉넉히 준다. lerobot 은 이 자리에 `num_retry=0` 을 써서 1Mbaud
+        반이중 버스에서 패킷 하나만 유실돼도 연결이 죽었다 (hardware-setup 결함 1).
+        """
+        for motor_id in self.ids:
+            self.write("Torque_Enable", motor_id, 0, retries=retries)
+            self.write("Lock", motor_id, 0, retries=retries)
 
     def read_calibration(self) -> dict[int, MotorCalibration]:
         """서보 EEPROM 에서 캘리브레이션을 읽는다. **파일이 필요 없다.**"""

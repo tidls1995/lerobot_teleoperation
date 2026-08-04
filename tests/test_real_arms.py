@@ -147,3 +147,136 @@ def test_a_lookup_failure_opens_nothing(monkeypatch):
         RealFollowerArms(arms=two_arms()).connect()
 
     assert not [e for e in events if e.startswith("open:")], f"아무것도 열지 않아야 한다: {events}"
+
+
+# --- lerobot 없는 리더 어댑터 ---------------------------------------------------
+#
+# exe 로 배포하려면 클라이언트에서 lerobot 을 걷어내야 한다 (torch 4.2GB). 갈아끼운
+# 구현이 같은 규약과 같은 순서를 지키는지, lerobot 판과 같은 잣대로 확인한다.
+# 숫자가 같다는 것은 tools/compare_read.py 로 실물에서 따로 확인했다 (차이 0.000).
+
+from home.leader_arms_lite import LiteLeaderArms
+
+
+def test_lite_leader_requires_both_sides():
+    with pytest.raises(ValueError, match="left"):
+        LiteLeaderArms(arms={"right": arm("right", serial_number="FOLLOWER_R")})
+
+
+def test_lite_leader_constructing_does_not_touch_hardware():
+    assert LiteLeaderArms(arms=two_arms()).is_connected is False
+
+
+def test_lite_leader_satisfies_the_device_protocol():
+    """서버·클라이언트가 갈아끼울 수 있어야 한다."""
+    assert isinstance(LiteLeaderArms(arms=two_arms()), LeaderArms)
+
+
+def test_lite_leader_reading_before_connect_is_an_error():
+    with pytest.raises(RuntimeError, match="connect"):
+        LiteLeaderArms(arms=two_arms()).read_positions()
+
+
+def test_lite_leader_close_before_connect_is_harmless():
+    LiteLeaderArms(arms=two_arms()).close()
+
+
+def test_lite_leader_resolves_both_ports_before_opening_either(monkeypatch):
+    """WinError 87 대책은 구현을 갈아끼워도 유지되어야 한다."""
+    events, module = _record_order(monkeypatch, "home.leader_arms_lite")
+
+    class FakeBus:
+        def __init__(self, port):
+            self.port = port
+
+        def read_calibration(self):
+            return {}
+
+    def fake_connect_one(self, side, port):
+        events.append(f"open:{port}")
+        return FakeBus(port)
+
+    monkeypatch.setattr(module.LiteLeaderArms, "_connect_one", fake_connect_one)
+    monkeypatch.setattr(module.LiteLeaderArms, "_warn_if_uncalibrated", lambda self, side: None)
+
+    LiteLeaderArms(arms=two_arms()).connect()
+
+    assert events[:2] == ["resolve:FOLLOWER_L", "resolve:FOLLOWER_R"], (
+        f"조회 2개가 먼저 끝나야 한다: {events}"
+    )
+    assert all(e.startswith("open:") for e in events[2:]), f"열기는 그 뒤에: {events}"
+
+
+def test_lite_leader_warns_about_an_uncalibrated_arm(caplog):
+    """캘리브레이션 안 된 팔로 조종하면 팔로워가 엉뚱한 자세로 간다.
+
+    원격 사용자는 캘리브레이션을 안 했을 수 있으므로, 조용히 넘어가면 안 된다.
+    """
+    import logging
+
+    from common.feetech_lite import MotorCalibration
+
+    leader = LiteLeaderArms(arms=two_arms())
+    leader._calibration["left"] = {
+        i: MotorCalibration(id=i, homing_offset=0, range_min=0, range_max=4095) for i in range(1, 7)
+    }
+    with caplog.at_level(logging.WARNING):
+        leader._warn_if_uncalibrated("left")
+    assert "never calibrated" in caplog.text
+    assert "shoulder_pan" in caplog.text
+
+
+def test_lite_leader_stays_quiet_about_a_calibrated_arm(caplog):
+    import logging
+
+    from common.feetech_lite import MotorCalibration
+
+    leader = LiteLeaderArms(arms=two_arms())
+    leader._calibration["left"] = {
+        i: MotorCalibration(id=i, homing_offset=-1651, range_min=768, range_max=3256)
+        for i in range(1, 7)
+    }
+    with caplog.at_level(logging.WARNING):
+        leader._warn_if_uncalibrated("left")
+    assert caplog.text == ""
+
+
+def test_lite_leader_puts_each_joint_in_the_right_slot_with_the_right_unit():
+    """자리가 틀리면 어깨 명령이 손목에 들어간다. 그리퍼만 퍼센트다 (스펙 §4.3)."""
+    from common.feetech_lite import MotorCalibration
+    from common.joints import GRIPPER_INDICES
+
+    # 범위를 0~4094 로 두면 가운데(2047)가 0도, 그리퍼는 50% 가 된다.
+    cal = {i: MotorCalibration(id=i, homing_offset=1, range_min=0, range_max=4094) for i in range(1, 7)}
+
+    class FakeBus:
+        def __init__(self, base):
+            self._base = base
+
+        def sync_read_positions(self):
+            # 모터마다 다른 값을 줘서 자리가 섞이면 드러나게 한다.
+            return {i: self._base + i for i in range(1, 7)}
+
+        def close(self):
+            pass
+
+    leader = LiteLeaderArms(arms=two_arms())
+    leader._buses = {"left": FakeBus(2047), "right": FakeBus(3000)}
+    leader._calibration = {"left": cal, "right": cal}
+
+    values = leader.read_positions()
+    assert len(values) == 12
+
+    # 왼팔이 앞, 오른팔이 뒤. 왼팔 값이 더 작아야 한다 (base 2047 < 3000).
+    assert values[0] < values[6]
+
+    # 각 팔 안에서 id 순서대로 조금씩 커진다.
+    degrees_left = values[0:5]
+    assert degrees_left == sorted(degrees_left), f"자리가 섞였다: {degrees_left}"
+
+    # 그리퍼 두 칸만 퍼센트(0~100)다. 도였다면 음수이거나 100 을 넘었을 것이다.
+    for index in GRIPPER_INDICES:
+        assert 0.0 <= values[index] <= 100.0, f"{index}번은 퍼센트여야 한다: {values[index]}"
+
+    # 가운데를 읽은 왼팔 첫 관절은 0도 근처다.
+    assert abs(values[0]) < 1.0
