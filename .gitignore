@@ -21,3 +21,7 @@ _cal/
 
 # 소킹 결과
 soak_runs/
+
+# exe 빌드 산출물
+dist/
+build/
