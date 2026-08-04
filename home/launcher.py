@@ -17,10 +17,19 @@ import traceback
 from pathlib import Path
 
 from common.config import ConfigError, HomeConfig, load_home_config
+from common.feetech_lite import MotorError
+from common.serial_ports import PortLookupError
 
 log = logging.getLogger(__name__)
 
+#: 이미 원인을 아는 실패들. 메시지에 무엇을 해야 하는지 들어 있으므로 트레이스백
+#: 없이 그 메시지만 보여준다. 원격 사용자에게 파이썬 예외는 겁만 준다.
+EXPECTED_FAILURES = (ConfigError, PortLookupError, MotorError, ConnectionError)
+
 CONFIG_NAME = "home.yaml"
+
+#: 본보기에서 사람이 채워야 할 자리. 그대로 남아 있으면 무엇을 하든 실패한다.
+PLACEHOLDER = "CHANGE-ME"
 
 CONFIG_TEMPLATE = """\
 # SO-101 원격 조종 설정. exe 와 같은 폴더에 두세요.
@@ -78,6 +87,37 @@ def find_config(explicit: str | None = None) -> Path:
         "Open it in Notepad, fill in server_host and the two serial numbers,\n"
         "then run this program again."
     )
+
+
+def unfilled_fields(cfg: HomeConfig) -> list[str]:
+    """본보기의 빈칸이 그대로 남아 있는 자리.
+
+    이걸 먼저 짚지 않으면 사용자는 "getaddrinfo failed" 같은 파이썬 예외를 보게 된다.
+    그것을 안 보게 하려고 exe 를 만드는 것인데, 하필 **가장 흔한 상황**에서 그게
+    튀어나오면 만든 의미가 없다.
+    """
+    out = []
+    if PLACEHOLDER in cfg.server_host:
+        out.append("server_host  (the workbench PC's address)")
+    for side, arm in sorted(cfg.arms.items()):
+        if arm.serial_number and PLACEHOLDER in arm.serial_number:
+            out.append(f"arms.{side}.serial_number  (from menu 4)")
+    return out
+
+
+def explain_unfilled(cfg: HomeConfig, cfg_path: Path) -> bool:
+    """아직 채워야 할 곳이 있으면 알려주고 True 를 준다."""
+    missing = unfilled_fields(cfg)
+    if not missing:
+        return False
+    print("The settings file still has blanks to fill in:\n")
+    for name in missing:
+        print(f"    {name}")
+    print(f"\n  Open this file in Notepad and replace every {PLACEHOLDER}:")
+    print(f"    {cfg_path}")
+    print("\n  Menu 4 shows the serial numbers of the arms plugged into this PC.")
+    print("  Ask your administrator for the workbench address.")
+    return True
 
 
 # --- 메뉴 항목 -------------------------------------------------------------------
@@ -172,10 +212,13 @@ def run_menu(cfg_path: Path) -> int:
             input("Fix it, then press Enter to reload (or close this window). ")
             continue
 
+        blanks = unfilled_fields(cfg)
         print()
         print("=" * 68)
         print("  SO-101 remote teleoperation")
         print(f"  workbench: {cfg.server_host}    settings: {cfg_path}")
+        if blanks:
+            print(f"  ** {len(blanks)} setting(s) not filled in yet - see below **")
         print("=" * 68)
         print(MENU)
         try:
@@ -184,6 +227,13 @@ def run_menu(cfg_path: Path) -> int:
             return 0
 
         print()
+        # 메뉴 4번(포트 보기)은 설정과 무관하므로 빈칸이 있어도 쓸 수 있어야 한다.
+        # 오히려 빈칸을 채우려면 그것부터 봐야 한다.
+        if blanks and choice in ("1", "2", "3"):
+            explain_unfilled(cfg, cfg_path)
+            input("\nPress Enter to go back to the menu. ")
+            continue
+
         try:
             if choice == "1":
                 check_arms(cfg)
@@ -200,10 +250,14 @@ def run_menu(cfg_path: Path) -> int:
                 continue
         except KeyboardInterrupt:
             print("\nStopped.")
+        except EXPECTED_FAILURES as exc:
+            # 우리가 이미 아는 실패다. 원인과 할 일이 메시지에 들어 있으므로
+            # 트레이스백을 보여줄 이유가 없다 - 원격 사용자에게는 겁만 준다.
+            print(f"{exc}")
         except Exception:
-            # 창이 닫혀버리면 원격 사용자는 아무것도 전할 수 없다. 무엇이 터졌는지
-            # 화면에 남기고 메뉴로 돌아간다.
-            print("\nSomething went wrong:\n")
+            # 여기까지 왔으면 우리가 예상 못 한 것이다. 창이 닫혀버리면 원격
+            # 사용자는 아무것도 전할 수 없으므로, 무엇이 터졌는지 남기고 돌아간다.
+            print("\nSomething unexpected went wrong:\n")
             traceback.print_exc()
             print("\nCopy the text above when you report this.")
 

@@ -130,3 +130,74 @@ def test_a_negative_camera_count_is_refused(tmp_path):
     path = write(tmp_path, "h.yaml", GOOD + "cameras: -1\n")
     with pytest.raises(ConfigError, match="cameras"):
         load_home_config(path)
+
+
+# --- 안 채운 설정을 파이썬 예외로 알려주면 안 된다 --------------------------------
+#
+# 실측(2026-08-04): 본보기를 그대로 두고 메뉴 2번을 누르니 socket.gaierror 트레이스백이
+# 떴다. 원격 사용자가 그런 것을 안 보게 하려고 exe 를 만드는 것인데, 하필 가장 흔한
+# 상황에서 나왔다.
+
+from home.launcher import PLACEHOLDER, explain_unfilled, unfilled_fields
+
+
+def template_config(tmp_path, **overrides):
+    text = CONFIG_TEMPLATE
+    for old, new in overrides.items():
+        text = text.replace(old, new)
+    return load_home_config(write(tmp_path, "home.yaml", text))
+
+
+def test_the_untouched_template_reports_every_blank(tmp_path):
+    blanks = unfilled_fields(template_config(tmp_path))
+    assert any("server_host" in b for b in blanks)
+    assert any("left" in b for b in blanks)
+    assert any("right" in b for b in blanks)
+
+
+def test_a_filled_in_file_reports_nothing(tmp_path):
+    cfg = template_config(tmp_path, **{PLACEHOLDER: "filled"})
+    assert unfilled_fields(cfg) == []
+
+
+def test_a_half_filled_file_reports_only_what_is_left(tmp_path):
+    text = CONFIG_TEMPLATE.replace('server_host: "CHANGE-ME"', 'server_host: "192.168.0.3"')
+    cfg = load_home_config(write(tmp_path, "home.yaml", text))
+    blanks = unfilled_fields(cfg)
+    assert not any("server_host" in b for b in blanks)
+    assert len(blanks) == 2, f"팔 2개만 남아야 한다: {blanks}"
+
+
+def test_the_explanation_names_the_file_and_what_to_do(tmp_path, capsys):
+    cfg_path = tmp_path / "home.yaml"
+    assert explain_unfilled(template_config(tmp_path), cfg_path) is True
+    out = capsys.readouterr().out
+    assert str(cfg_path) in out, "어느 파일을 열어야 하는지 있어야 한다"
+    assert "Notepad" in out
+    assert "Menu 4" in out, "시리얼 번호를 어디서 보는지 있어야 한다"
+
+
+def test_nothing_is_said_when_there_is_nothing_to_fill(tmp_path, capsys):
+    cfg = template_config(tmp_path, **{PLACEHOLDER: "filled"})
+    assert explain_unfilled(cfg, tmp_path / "home.yaml") is False
+    assert capsys.readouterr().out == ""
+
+
+# --- 주소를 못 찾는 것과 회선이 막힌 것은 다른 문제다 -----------------------------
+
+
+def test_an_unresolvable_host_is_explained_not_raised():
+    """socket.gaierror 가 그대로 올라오면 트레이스백이 화면에 뜬다."""
+    from tools.check_link import check_control
+
+    result = check_control("CHANGE-ME", 5555, timeout=0.5)
+    assert result.ok is False
+    assert "server_host" in result.detail, f"무엇을 고쳐야 하는지 있어야 한다: {result.detail}"
+
+
+def test_an_unresolvable_host_on_the_video_channel_too():
+    from tools.check_link import check_video
+
+    result = check_video("CHANGE-ME", 5556, timeout=0.5)
+    assert result.ok is False
+    assert "server_host" in result.detail

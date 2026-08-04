@@ -49,7 +49,18 @@ def check_control(host: str, port: int, timeout: float = 3.0) -> LinkResult:
     sock.settimeout(timeout)
     try:
         started = time.monotonic()
-        sock.sendto(packet.pack(), (host, port))
+        try:
+            sock.sendto(packet.pack(), (host, port))
+        except socket.gaierror:
+            # 이름을 못 찾은 것이지 회선 문제가 아니다. 원격 사용자가 설정에 주소를
+            # 아직 안 넣었거나 오타를 낸 경우가 대부분이므로 그렇게 말해 준다.
+            return LinkResult(
+                False,
+                f"cannot look up {host!r}. Check server_host in the settings file - "
+                "it should be the workbench PC's address, like 192.168.0.3.",
+            )
+        except OSError as exc:
+            return LinkResult(False, f"send failed to {host}:{port}/udp: {exc}")
         try:
             data, _ = sock.recvfrom(4096)
         except socket.timeout:
@@ -91,6 +102,11 @@ def check_video(host: str, port: int, timeout: float = 5.0) -> LinkResult:
     """영상 TCP 에 붙어 프레임 한 장을 받아본다."""
     try:
         sock = socket.create_connection((host, port), timeout=timeout)
+    except socket.gaierror:
+        return LinkResult(
+            False,
+            f"cannot look up {host!r}. Check server_host in the settings file.",
+        )
     except OSError as exc:
         return LinkResult(
             False,
