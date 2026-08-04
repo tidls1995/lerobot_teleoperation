@@ -68,6 +68,22 @@ class ControlLink:
         with self._lock:
             return self._telemetry
 
+    def snapshot(self) -> tuple[TelemetryPacket, float, float | None, int] | None:
+        """(패킷, 수신 시각, 그 패킷의 RTT, 누적 유실) 을 **한 번의 잠금으로** 읽는다.
+
+        `latest_telemetry()` 와 `rtt_ms` 를 따로 부르면 그 사이에 새 패킷이 들어와
+        서로 다른 패킷의 값이 섞일 수 있다. 화면에서는 한 프레임 어긋나는 정도라
+        문제되지 않지만, 소킹처럼 **꼬리 지연을 세는** 쪽에서는 튄 값이 엉뚱한
+        시각에 기록되어 원인을 못 찾게 된다.
+
+        수신 시각으로 중복을 걸러내면 받은 패킷마다 정확히 한 번씩 샘플을 얻는다.
+        """
+        with self._lock:
+            if self._telemetry is None:
+                return None
+            packet, at = self._telemetry
+            return packet, at, self._rtt_ms, self._lost
+
     def start(self) -> None:
         if self._sock is not None:
             return

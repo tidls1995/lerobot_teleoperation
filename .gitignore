@@ -18,3 +18,6 @@ __pycache__/
 # "파일이 있는데 has no calibration registered" 로 한참 헤맸다 (2026-08-03).
 robots/
 _cal/
+
+# 소킹 결과
+soak_runs/

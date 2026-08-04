@@ -40,6 +40,66 @@ _MOTOR_RETRIES = 3
 _MOTOR_FAILURE_REASON = "motor communication failure"
 
 
+class ClientSession:
+    """어느 클라이언트의 어느 순번까지 받았는지. 소켓도 시계도 모른다.
+
+    **왜 필요한가.** 순번만 보고 낡은 패킷을 버리면, 클라이언트가 재시작했을 때
+    순번이 1부터 다시 시작하는 것을 전부 '낡은 패킷'으로 버리게 된다. 하루를 돌린
+    뒤라면 서버의 마지막 순번이 500만이 넘으므로, 재시작한 클라이언트는 **하루 동안
+    무시당한다.** 조종자 화면은 DISCONNECTED 로 굳고, 되살리려면 누군가 작업대까지
+    걸어가 서버를 재시작해야 한다 - 무인 운영에서 가장 겪으면 안 되는 고장이다.
+    (실측 2026-08-04: 소킹 스모크 테스트에서 텔레메트리를 한 개도 못 받았다.)
+
+    **그래도 순번 검사를 버릴 수는 없다.** UDP 는 순서를 지키지 않으므로 늦게 도착한
+    낡은 패킷을 그대로 따르면 팔이 과거 자세로 튄다.
+
+    그래서 **세션** 개념을 둔다. 한 번에 한 클라이언트만 따르고, 그 클라이언트가
+    워치독보다 오래 조용하면 그때 다음 패킷이 새 세션을 연다. 워치독이 이미 터진
+    시점이라 서버는 HOLD 로 가 있고, 새 세션이 열려도 **자동으로 다시 움직이지
+    않는다** - 조종자가 RESET 을 눌러 정렬을 다시 해야 한다 (스펙 §5.1).
+
+    조용하지 않은 동안 다른 주소에서 오는 패킷은 **받지 않는다.** 두 조종자가 동시에
+    보내면 팔이 두 사람의 명령 사이에서 튀게 되고, 그것이 무시당하는 것보다 위험하다.
+    """
+
+    def __init__(self, takeover_after_s: float) -> None:
+        self._takeover_after_s = takeover_after_s
+        self.addr: tuple[str, int] | None = None
+        self._last_seq: int | None = None
+        self._last_at: float | None = None
+
+    def accept(self, addr: tuple[str, int], seq: int, now: float) -> bool:
+        """이 패킷을 따를지 결정하고, 따르기로 했으면 상태를 갱신한다."""
+        quiet_for = None if self._last_at is None else now - self._last_at
+        stale_client = quiet_for is not None and quiet_for > self._takeover_after_s
+
+        if self.addr is None:
+            log.info("control session started with %s (seq %d)", addr, seq)
+        elif stale_client:
+            log.info(
+                "control session restarted with %s (seq %d) - the previous client at %s "
+                "was quiet for %.0f ms",
+                addr,
+                seq,
+                self.addr,
+                quiet_for * 1000.0,
+            )
+        elif addr != self.addr:
+            # 조용하지 않은 클라이언트가 있는데 다른 곳에서 왔다. 무시한다.
+            log.warning(
+                "ignoring control packet from %s - %s is the active client", addr, self.addr
+            )
+            return False
+        elif self._last_seq is not None and not is_newer(seq, self._last_seq):
+            log.debug("dropped stale packet seq=%d (last=%d)", seq, self._last_seq)
+            return False
+
+        self.addr = addr
+        self._last_seq = seq
+        self._last_at = now
+        return True
+
+
 class TeleopServer:
     def __init__(
         self,
@@ -106,32 +166,28 @@ class TeleopServer:
 
     def _loop(self) -> None:
         assert self._sock is not None
-        last_seq: int | None = None
-        client_addr: tuple[str, int] | None = None
+        session = ClientSession(takeover_after_s=self._cfg.safety.watchdog_ms / 1000.0)
 
         while not self._stop.is_set():
             packet: ControlPacket | None = None
             try:
                 data, addr = self._sock.recvfrom(4096)
             except socket.timeout:
-                pass
+                addr = None
             except OSError:
                 break
-            else:
+
+            now = self._clock()
+            if addr is not None:
                 if len(data) == CONTROL_SIZE:
                     candidate = ControlPacket.unpack(data)
                     if candidate is None:
                         log.debug("rejected packet from %s (bad magic)", addr)
-                    elif last_seq is not None and not is_newer(candidate.seq, last_seq):
-                        log.debug("dropped stale packet seq=%d (last=%d)", candidate.seq, last_seq)
-                    else:
-                        last_seq = candidate.seq
+                    elif session.accept(addr, candidate.seq, now):
                         packet = candidate
-                        client_addr = addr
                 else:
                     log.debug("rejected packet from %s (size %d)", addr, len(data))
 
-            now = self._clock()
             actual, motor_failed = self._read_actual()
             extra_flags = 0
             if motor_failed:
@@ -157,7 +213,7 @@ class TeleopServer:
                     extra_flags |= Flag.MOTOR_ERROR
                     self._gate.force_hold(_MOTOR_FAILURE_REASON)
 
-            if packet is not None and client_addr is not None:
+            if packet is not None and session.addr is not None:
                 telemetry = TelemetryPacket(
                     seq_echo=packet.seq,
                     t_send=time.time(),
@@ -166,7 +222,7 @@ class TeleopServer:
                     joints=tuple(actual),
                 )
                 try:
-                    self._sock.sendto(telemetry.pack(), client_addr)
+                    self._sock.sendto(telemetry.pack(), session.addr)
                 except OSError:
                     log.debug("telemetry send failed")
 

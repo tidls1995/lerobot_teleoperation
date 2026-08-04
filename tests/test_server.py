@@ -252,3 +252,79 @@ def test_second_server_cannot_steal_the_control_port():
             second.start()
     finally:
         first.stop()
+
+
+# --- 클라이언트 세션 ------------------------------------------------------------
+#
+# 순번만 보고 낡은 패킷을 버리면, 클라이언트가 재시작해 순번이 1부터 다시 시작할 때
+# 전부 버리게 된다. 하루를 돌린 뒤라면 서버의 마지막 순번이 500만이 넘어 재시작한
+# 클라이언트는 하루 동안 무시당한다 - 조종자 화면은 DISCONNECTED 로 굳고 되살리려면
+# 누군가 작업대까지 걸어가야 한다.
+#
+# 실측(2026-08-04): 소킹 스모크 테스트에서 텔레메트리를 한 개도 못 받았다.
+
+from workbench.server import ClientSession
+
+A = ("192.168.0.9", 51000)
+B = ("192.168.0.9", 51001)  # 같은 PC, 재시작해서 포트가 바뀐 클라이언트
+C = ("192.168.0.77", 40000)  # 다른 사람
+
+
+def make_session(takeover_after_s=0.2):
+    return ClientSession(takeover_after_s=takeover_after_s)
+
+
+def test_the_first_packet_starts_a_session():
+    s = make_session()
+    assert s.accept(A, seq=1, now=0.0) is True
+    assert s.addr == A
+
+
+def test_an_out_of_order_packet_is_dropped():
+    """UDP 는 순서를 지키지 않는다. 늦게 온 낡은 패킷을 따르면 팔이 과거로 튄다."""
+    s = make_session()
+    s.accept(A, seq=10, now=0.0)
+    assert s.accept(A, seq=9, now=0.01) is False
+    assert s.accept(A, seq=11, now=0.02) is True
+
+
+def test_a_restarted_client_is_picked_up_instead_of_ignored_forever():
+    """이 프로젝트에서 실제로 겪은 고장이다."""
+    s = make_session()
+    s.accept(A, seq=5_000_000, now=0.0)  # 하루를 돌린 뒤
+
+    # 클라이언트가 죽었다가 다시 떠서 1번부터 보낸다. 포트도 새로 잡힌다.
+    assert s.accept(B, seq=1, now=5.0) is True
+    assert s.addr == B
+    assert s.accept(B, seq=2, now=5.02) is True
+
+
+def test_a_client_restarting_on_the_same_port_is_also_picked_up():
+    s = make_session()
+    s.accept(A, seq=900_000, now=0.0)
+    assert s.accept(A, seq=1, now=5.0) is True
+
+
+def test_a_second_client_cannot_barge_in_while_the_first_is_talking():
+    """두 사람이 동시에 보내면 팔이 두 명령 사이에서 튄다. 무시당하는 쪽이 안전하다."""
+    s = make_session()
+    s.accept(A, seq=1, now=0.0)
+    assert s.accept(C, seq=1, now=0.05) is False
+    assert s.addr == A
+    assert s.accept(A, seq=2, now=0.06) is True
+
+
+def test_takeover_needs_silence_longer_than_the_watchdog():
+    s = make_session(takeover_after_s=0.2)
+    s.accept(A, seq=100, now=0.0)
+    assert s.accept(C, seq=1, now=0.19) is False, "워치독 전에는 넘겨주지 않는다"
+    assert s.accept(C, seq=1, now=0.21) is True
+
+
+def test_a_rejected_packet_does_not_move_the_session_forward():
+    """거절한 패킷이 순번이나 시각을 갱신하면 정상 클라이언트가 밀려난다."""
+    s = make_session()
+    s.accept(A, seq=10, now=0.0)
+    s.accept(C, seq=999, now=0.05)  # 거절됨
+    assert s.addr == A
+    assert s.accept(A, seq=11, now=0.06) is True, "A 의 다음 패킷은 여전히 받아야 한다"

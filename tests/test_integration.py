@@ -105,6 +105,37 @@ def test_rtt_is_measured(stack):
     assert 0.0 <= link.rtt_ms < 100.0  # localhost
 
 
+def test_snapshot_returns_one_packets_values_together(stack):
+    """소킹은 '언제 튀었나'를 세므로, 서로 다른 패킷의 값이 섞이면 안 된다.
+
+    latest_telemetry() 와 rtt_ms 를 따로 부르면 그 사이에 새 패킷이 들어와
+    튄 RTT 가 엉뚱한 시각에 기록될 수 있다.
+    """
+    _, _, link, _ = stack
+    leader = FakeLeaderArms()
+    assert link.snapshot() is None, "패킷을 받기 전에는 None 이어야 한다"
+
+    for _ in range(30):
+        link.send(joints=leader.read_positions(), clutch=False, reset=False)
+        time.sleep(1 / 60)
+    assert wait_until(lambda: link.snapshot() is not None and link.snapshot()[2] is not None)
+
+    packet, recv_at, rtt_ms, lost = link.snapshot()
+    assert packet.seq_echo > 0
+    assert recv_at > 0.0
+    assert 0.0 <= rtt_ms < 100.0  # localhost
+    assert lost >= 0
+
+    # 수신 시각으로 중복을 거른다: 새 패킷이 오면 시각이 바뀐다.
+    first_at = recv_at
+    assert wait_until(
+        lambda: (
+            link.send(joints=leader.read_positions(), clutch=False, reset=False),
+            link.snapshot()[1] != first_at,
+        )[1]
+    )
+
+
 def test_video_arrives_on_all_three_cameras(stack):
     _, _, _, video = stack
     assert wait_until(lambda: all(video.latest(i) is not None for i in range(3)))
