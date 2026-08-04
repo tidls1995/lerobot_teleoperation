@@ -275,7 +275,8 @@ class FeetechLiteBus:
         for _ in range(retries + 1):
             if self._sync_reader.txRxPacket() != scs.COMM_SUCCESS:
                 continue
-            if not all(self._sync_reader.isAvailable(i, addr, length)[0] for i in self.ids):
+            # isAvailable 은 bool 을 돌려준다 (dynamixel SDK 처럼 튜플이 아니다).
+            if not all(self._sync_reader.isAvailable(i, addr, length) for i in self.ids):
                 continue
             return {
                 motor_id: decode_sign_magnitude(
