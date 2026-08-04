@@ -101,6 +101,9 @@ class HomeConfig:
     use_mock: bool
     client_watchdog_ms: int
     arms: dict[str, ArmConfig] = field(default_factory=dict)
+    # 원격 사용자용 기본값. exe 는 명령줄 인자를 받지 않으므로 여기서 정한다.
+    cameras: int = 2
+    clutch: str = "toggle"
 
 
 def _read_yaml(path: str | Path) -> dict[str, Any]:
@@ -290,6 +293,12 @@ def load_workbench_config(path: str | Path) -> WorkbenchConfig:
 
 def load_home_config(path: str | Path) -> HomeConfig:
     data = _read_yaml(path)
+    cameras = int(data.get("cameras", 2))
+    if cameras < 0:
+        raise ConfigError(f"cameras must be 0 or more, got {cameras}")
+    clutch = str(data.get("clutch", "toggle"))
+    if clutch not in ("hold", "toggle"):
+        raise ConfigError(f"clutch must be 'hold' or 'toggle', got {clutch!r}")
     return HomeConfig(
         server_host=str(_require(data, "server_host", "home config")),
         control_port=_check_port(_require(data, "control_port", "home config"), "control_port"),
@@ -297,4 +306,6 @@ def load_home_config(path: str | Path) -> HomeConfig:
         use_mock=bool(_require(data, "use_mock", "home config")),
         client_watchdog_ms=int(_require(data, "client_watchdog_ms", "home config")),
         arms=_parse_arms(data["arms"]) if "arms" in data else {},
+        cameras=cameras,
+        clutch=clutch,
     )
